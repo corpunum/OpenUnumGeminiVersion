@@ -46,6 +46,9 @@ The agent is explicitly instructed that it **owns the hardware**. If a high-leve
 - Sensitive GitHub token patterns are redacted before persistence.
 - Autonomous plan-lock mode now creates a step plan and instructs the agent to execute it without further user input.
 - Self-heal retries inject corrective strategy instructions before giving up.
+- File tools are restricted to the project root to avoid scope drift into unrelated repositories.
+- Provider chat calls use retry logic for transient `500`/`429` responses.
+- Oversized tool outputs are truncated before entering chat context.
 
 ### Ghost "Poke" System
 If the agent is stuck in a loop, the `GhostMonitor` detects the pattern in the database and injects a `[GHOST POKE]` message into the system prompt, forcing a radical strategy change (e.g., "Switch to Terminal immediately").

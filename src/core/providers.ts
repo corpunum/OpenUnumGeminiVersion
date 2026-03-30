@@ -38,6 +38,10 @@ export class ModelProvider {
     return headers;
   }
 
+  private async sleep(ms: number) {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   async chat(messages: ChatMessage[], tools?: any[]) {
     // Ensure we are sending a clean messages array without circular refs or extra fields
     const sanitizedMessages = messages.map(m => ({
@@ -66,18 +70,30 @@ export class ModelProvider {
       payload.tool_choice = "auto";
     }
 
-    const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: this.getAuthHeaders(),
-      body: JSON.stringify(payload),
-    });
+    const maxAttempts = 3;
+    let lastError = "";
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: this.getAuthHeaders(),
+        body: JSON.stringify(payload),
+      });
 
-    if (!response.ok) {
+      if (response.ok) {
+        return await response.json();
+      }
+
       const error = await response.text();
-      throw new Error(`Provider Error (${response.status}): ${error}`);
+      lastError = `Provider Error (${response.status}): ${error}`;
+
+      const retryable = response.status >= 500 || response.status === 429;
+      if (!retryable || attempt === maxAttempts) {
+        throw new Error(lastError);
+      }
+      await this.sleep(300 * attempt);
     }
 
-    return await response.json();
+    throw new Error(lastError || "Provider Error: unknown");
   }
 
   async listModels(): Promise<string[]> {

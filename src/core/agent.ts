@@ -30,6 +30,7 @@ export class OpenUnumAgent {
   private readonly uiSessionId = "ui";
   private maxRetries = 5;
   private maxIterations = 15; // Increased for complex tasks
+  private maxToolResultChars = 5000;
   private globalSuccessCount = 0; // Persistent across the entire session
   private toolFailureCount: Map<string, number> = new Map(); // For Deterministic Pivot
   private activePlan: ExecutionPlan | null = null;
@@ -238,6 +239,11 @@ export class OpenUnumAgent {
       .trim();
   }
 
+  private capToolResult(text: string): string {
+    if (text.length <= this.maxToolResultChars) return text;
+    return `${text.slice(0, this.maxToolResultChars)}\n\n[TRUNCATED ${text.length - this.maxToolResultChars} chars]`;
+  }
+
   private sanitizeSensitive(text: string): string {
     return text
       .replace(/\bghp_[A-Za-z0-9]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
@@ -290,6 +296,10 @@ export class OpenUnumAgent {
 
       this.history.push({ role: "user", content: sanitizedUserMessage });
       this.persistMessage(sessionId, "user", sanitizedUserMessage);
+      this.history.push({
+        role: "system",
+        content: "WORKSPACE POLICY: Operate only inside /home/corp-unum/OpenUnumGeminiVersion unless the user explicitly requests another path.",
+      });
       const tacticalContext = await this.getTacticalContext(sanitizedUserMessage);
       if (tacticalContext) {
         this.history.push({ role: "system", content: tacticalContext });
@@ -409,10 +419,10 @@ export class OpenUnumAgent {
             this.history.push({
               role: "tool",
               tool_call_id: toolCall.id,
-              content: result,
+              content: this.capToolResult(result),
             });
             toolExecutionCount++;
-            lastToolSummary = `Last tool (${tool.name}) output:\n${result}`;
+            lastToolSummary = `Last tool (${tool.name}) output:\n${this.capToolResult(result)}`;
             this.markPlanProgress(success);
 
             if (this.memory && objectiveForMemory) {
