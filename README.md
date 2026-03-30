@@ -21,6 +21,7 @@ A high-performance, real-time Web UI (`http://localhost:3000`) that provides:
 - **Interactive Tool Cards**: Expandable blocks showing raw tool calls, parameters, and results.
 - **Pulsing Telemetry**: Live status updates showing the agent's internal "thinking" and "iteration" cycles.
 - **Dynamic Configuration**: Hot-swap LLM providers (Ollama, NVIDIA, OpenRouter, OpenAI) without restarting.
+- **Configurable Fallback Model**: Assign a preferred backup model from settings for automatic failover.
 - **Persistent Chat History**: Conversations are stored locally and restored after browser refresh.
 - **Explicit Reset**: Type `/new` in chat to clear history and start a clean session.
 

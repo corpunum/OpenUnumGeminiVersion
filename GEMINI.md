@@ -15,6 +15,7 @@ OpenUnum is a minimalist, high-performance AI assistant designed for deep integr
 - **Session Behavior**: UI chat is persisted under session `ui` and is only cleared when `/new` is invoked.
 - **`ghost.ts`**: The **Ghost Monitor**. A background process that "pokes" the agent via the system channel if it detects a pattern of 3+ failures, mandating a strategy pivot.
 - **`providers.ts`**: Model-agnostic interface supporting Ollama, OpenRouter, NVIDIA, and OpenAI; includes model listing for provider dropdown population.
+- **Fallback Preference**: `model.fallbackModelId` can be assigned from UI and is prioritized during failover.
 
 ### 2. Tool Arsenal (`src/tools/`)
 - **`exec.ts`**: Bun-native terminal execution. Allows the agent to run any shell command, install packages (`apt`), or manage services.

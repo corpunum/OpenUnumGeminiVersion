@@ -50,12 +50,13 @@ export class OpenUnumAgent {
     this.tools.set(tool.name, tool);
   }
 
-  updateModelConfig(config: { provider: string; baseUrl: string; apiKey?: string; modelId: string }) {
+  updateModelConfig(config: { provider: string; baseUrl: string; apiKey?: string; modelId: string; fallbackModelId?: string }) {
     this.provider = new ModelProvider({
       provider: config.provider,
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       model: config.modelId,
+      fallbackModel: config.fallbackModelId,
     });
   }
 

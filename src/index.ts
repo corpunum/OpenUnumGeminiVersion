@@ -21,6 +21,7 @@ async function main() {
     baseUrl: config.model.baseUrl,
     apiKey: config.model.apiKey,
     model: config.model.modelId,
+    fallbackModel: config.model.fallbackModelId,
   });
 
   const systemPrompt = `You are OpenUnum, an autonomous agent with FULL ownership of the underlying hardware and software. \nYour goal is to fulfill your master's request using the PATH OF LEAST RESISTANCE. \n- If the BROWSER fails/times out, switch to TERMINAL (aria2, curl, huggingface-cli).\n- If a tool is missing, INSTALL it (sudo apt-get -y install).\n- RECORD your tactics in your memory to avoid repeat failures.\n- NEVER apologize. If you fail 3 times, pivot to a completely different approach (e.g. building a custom script).`;

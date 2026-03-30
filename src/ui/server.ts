@@ -225,6 +225,10 @@ function getHtml() {
           <input type="password" id="apiKey" class="settings-input" placeholder="Optional for local Ollama">
           <label>Neural Model ID</label>
           <select id="modelId" class="settings-input"></select>
+          <label>Fallback Model ID</label>
+          <select id="fallbackModelId" class="settings-input">
+            <option value="">(Auto)</option>
+          </select>
           <button onclick="saveConfig()" style="margin-top: 25px; background: var(--primary); color:black; border:none; padding:12px 24px; border-radius:8px; font-weight:700; cursor:pointer;">APPLY CHANGES</button>
         </div>
       </div>
@@ -364,12 +368,15 @@ function getHtml() {
 
       async function loadModels(selectedModelId) {
         const modelSelect = document.getElementById('modelId');
+        const fallbackSelect = document.getElementById('fallbackModelId');
         const previousSelection = selectedModelId || modelSelect.value;
+        const previousFallback = fallbackSelect.value;
         const provider = document.getElementById('provider').value;
         const baseUrl = document.getElementById('baseUrl').value;
         const apiKey = document.getElementById('apiKey').value;
 
         modelSelect.innerHTML = '<option value="">Loading models...</option>';
+        fallbackSelect.innerHTML = '<option value="">Loading models...</option>';
 
         try {
           const params = new URLSearchParams({ provider, baseUrl });
@@ -380,6 +387,7 @@ function getHtml() {
 
           if (!models.length) {
             modelSelect.innerHTML = '<option value="">No models found</option>';
+            fallbackSelect.innerHTML = '<option value="">(Auto)</option>';
             if (previousSelection) {
               const option = document.createElement('option');
               option.value = previousSelection;
@@ -387,15 +395,28 @@ function getHtml() {
               modelSelect.appendChild(option);
               modelSelect.value = previousSelection;
             }
+            if (previousFallback) {
+              const fallbackOption = document.createElement('option');
+              fallbackOption.value = previousFallback;
+              fallbackOption.textContent = previousFallback + ' (current)';
+              fallbackSelect.appendChild(fallbackOption);
+              fallbackSelect.value = previousFallback;
+            }
             return;
           }
 
           modelSelect.innerHTML = '';
+          fallbackSelect.innerHTML = '<option value="">(Auto)</option>';
           for (const model of models) {
             const option = document.createElement('option');
             option.value = model;
             option.textContent = model;
             modelSelect.appendChild(option);
+
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = model;
+            fallbackOption.textContent = model;
+            fallbackSelect.appendChild(fallbackOption);
           }
 
           if (previousSelection && models.includes(previousSelection)) {
@@ -403,8 +424,15 @@ function getHtml() {
           } else {
             modelSelect.value = models[0];
           }
+
+          if (previousFallback && models.includes(previousFallback)) {
+            fallbackSelect.value = previousFallback;
+          } else {
+            fallbackSelect.value = '';
+          }
         } catch {
           modelSelect.innerHTML = '<option value="">Error loading models</option>';
+          fallbackSelect.innerHTML = '<option value="">(Auto)</option>';
         }
       }
 
@@ -417,6 +445,7 @@ function getHtml() {
         document.getElementById('apiKey').value = config.model.apiKey || '';
 
         await loadModels(config.model.modelId);
+        document.getElementById('fallbackModelId').value = config.model.fallbackModelId || '';
       }
 
       async function saveConfig() {
@@ -426,6 +455,7 @@ function getHtml() {
             baseUrl: document.getElementById('baseUrl').value,
             apiKey: document.getElementById('apiKey').value || undefined,
             modelId: document.getElementById('modelId').value,
+            fallbackModelId: document.getElementById('fallbackModelId').value || "",
           },
         };
 

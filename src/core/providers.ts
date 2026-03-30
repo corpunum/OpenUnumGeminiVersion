@@ -10,6 +10,7 @@ export interface ModelProviderConfig {
   baseUrl: string;
   apiKey?: string;
   model: string;
+  fallbackModel?: string;
 }
 
 export class ModelProvider {
@@ -75,6 +76,7 @@ export class ModelProvider {
   private candidateFallbackModels(): string[] {
     const provider = this.config.provider;
     const current = this.config.model;
+    const configuredFallback = this.config.fallbackModel?.trim();
 
     const defaults: Record<string, string[]> = {
       ollama: [
@@ -99,7 +101,11 @@ export class ModelProvider {
       ],
     };
 
-    return (defaults[provider] ?? []).filter(m => m !== current);
+    const candidates = [...(defaults[provider] ?? [])];
+    if (configuredFallback && configuredFallback !== current) {
+      candidates.unshift(configuredFallback);
+    }
+    return Array.from(new Set(candidates)).filter(m => m !== current);
   }
 
   private async sendChatRequest(
