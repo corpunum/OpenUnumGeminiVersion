@@ -30,6 +30,7 @@ A high-performance, real-time Web UI (`http://localhost:3000`) that provides:
 - Safety caps remain enabled to prevent runaway tool execution.
 - Workspace guardrails keep file operations inside `/home/corp-unum/OpenUnumGeminiVersion`.
 - Large tool outputs are truncated to keep provider context stable.
+- Provider transient failures (`500`/`429`) are retried with degraded context fallback.
 
 ### 💻 Hardware & Software Ownership
 The agent is explicitly authorized to own the system. If a tool is missing, it installs it. If a website is slow, it pivots to `aria2`, `curl`, or `huggingface-cli` to get the job done.

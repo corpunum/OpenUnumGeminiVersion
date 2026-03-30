@@ -328,6 +328,7 @@ export class OpenUnumAgent {
     const toolUsageCount: Map<string, number> = new Map();
     let toolExecutionCount = 0;
     let lastToolSummary = "";
+    let providerFailureCount = 0;
     const totalIterationBudget = this.maxIterations + this.maxRecoveryAttempts * 5;
 
     iterationLoop:
@@ -349,7 +350,30 @@ export class OpenUnumAgent {
       const loopMessages = this.activePlan
         ? [...this.history, { role: "system", content: this.getPlanInstruction() }]
         : this.history;
-      const response = await this.provider.chat(loopMessages, toolSchemas);
+      let response: any;
+      try {
+        response = await this.provider.chat(loopMessages, toolSchemas);
+        providerFailureCount = 0;
+      } catch (err: any) {
+        providerFailureCount++;
+        const errMsg = String(err?.message ?? err);
+        const transient = errMsg.includes("Provider Error (500)") || errMsg.includes("Provider Error (429)");
+        if (transient && providerFailureCount <= 2) {
+          this.onStatus?.(`Provider transient error detected (${providerFailureCount}/2). Retrying with recovery strategy...`);
+          this.history.push({
+            role: "system",
+            content: "Provider transient error occurred. Continue safely with a shorter context and avoid unnecessary tool calls.",
+          });
+          continue;
+        }
+        if (lastToolSummary) {
+          this.onStatus?.("Provider unavailable. Returning best available evidence.");
+          this.activePlan = null;
+          return this.finalizeResponse(`Provider temporarily unavailable.\n\n${lastToolSummary}`, sessionId);
+        }
+        this.activePlan = null;
+        return this.finalizeResponse("Provider temporarily unavailable after retries. Automatic recovery failed for this turn.", sessionId);
+      }
       const assistantMessage = response.choices[0].message;
       const content = assistantMessage.content || "";
 

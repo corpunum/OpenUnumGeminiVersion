@@ -49,6 +49,7 @@ The agent is explicitly instructed that it **owns the hardware**. If a high-leve
 - File tools are restricted to the project root to avoid scope drift into unrelated repositories.
 - Provider chat calls use retry logic for transient `500`/`429` responses.
 - Oversized tool outputs are truncated before entering chat context.
+- If provider retries still fail, agent returns best available evidence instead of throwing raw UI errors.
 
 ### Ghost "Poke" System
 If the agent is stuck in a loop, the `GhostMonitor` detects the pattern in the database and injects a `[GHOST POKE]` message into the system prompt, forcing a radical strategy change (e.g., "Switch to Terminal immediately").
