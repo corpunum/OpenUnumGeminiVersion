@@ -8,6 +8,19 @@ export interface ToolDefinition {
   execute: (args: any) => Promise<string>;
 }
 
+interface PlanStep {
+  index: number;
+  title: string;
+  status: "pending" | "done";
+}
+
+interface ExecutionPlan {
+  objective: string;
+  steps: PlanStep[];
+  currentStep: number;
+  recoveryAttempts: number;
+}
+
 export class OpenUnumAgent {
   private provider: ModelProvider;
   private tools: Map<string, ToolDefinition>;
@@ -19,6 +32,8 @@ export class OpenUnumAgent {
   private maxIterations = 15; // Increased for complex tasks
   private globalSuccessCount = 0; // Persistent across the entire session
   private toolFailureCount: Map<string, number> = new Map(); // For Deterministic Pivot
+  private activePlan: ExecutionPlan | null = null;
+  private maxRecoveryAttempts = 2;
   public onStatus?: (status: string) => void;
 
   constructor(provider: ModelProvider, systemPrompt: string, memory?: MemoryManager) {
@@ -55,6 +70,106 @@ export class OpenUnumAgent {
     }
     context += "\nINSTRUCTION: Favor PROVEN SUCCESS. Avoid FAILED ATTEMPTS. If a tool shows multiple failures, the system will deterministically disable it for the next attempt.\n";
     return context;
+  }
+
+  private parsePlanSteps(text: string): PlanStep[] {
+    try {
+      const parsed = JSON.parse(text) as { steps?: string[] };
+      const steps = (parsed.steps ?? [])
+        .map(s => s.trim())
+        .filter(Boolean)
+        .slice(0, 8);
+      if (steps.length > 0) {
+        return steps.map((title, idx) => ({
+          index: idx,
+          title,
+          status: "pending" as const,
+        }));
+      }
+    } catch {
+      // Fallback to line parsing below.
+    }
+
+    const lines = text
+      .split("\n")
+      .map(line => line.replace(/^\s*[-*\d.)]+\s*/, "").trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    return lines.map((title, idx) => ({
+      index: idx,
+      title,
+      status: "pending" as const,
+    }));
+  }
+
+  private async buildExecutionPlan(objective: string): Promise<ExecutionPlan | null> {
+    try {
+      const planPrompt = [
+        "Return a concise execution plan for this objective.",
+        "Output JSON only in this exact format: {\"steps\":[\"step 1\", \"step 2\", ...]}",
+        "Use 3-7 steps. No tool calls. No XML/tags.",
+      ].join(" ");
+
+      const response = await this.provider.chat([
+        { role: "system", content: planPrompt },
+        { role: "user", content: objective },
+      ]);
+      const raw = response?.choices?.[0]?.message?.content ?? "";
+      const cleaned = this.cleanAssistantContent(raw);
+      const steps = this.parsePlanSteps(cleaned);
+      if (steps.length === 0) {
+        return null;
+      }
+      return {
+        objective,
+        steps,
+        currentStep: 0,
+        recoveryAttempts: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private getPlanInstruction(): string {
+    if (!this.activePlan) return "";
+    const planLines = this.activePlan.steps.map((s, idx) => {
+      const status = idx < this.activePlan.currentStep || s.status === "done" ? "done" : "pending";
+      const marker = idx === this.activePlan.currentStep ? " <- current" : "";
+      return `${idx + 1}. [${status}] ${s.title}${marker}`;
+    });
+    return [
+      "PLAN LOCK ACTIVE. Follow this plan exactly and finish it autonomously.",
+      `Objective: ${this.activePlan.objective}`,
+      ...planLines,
+      "Rules: minimize repeated tools; avoid calling same tool+args repeatedly; when enough evidence exists, output final answer.",
+    ].join("\n");
+  }
+
+  private markPlanProgress(success: boolean) {
+    if (!this.activePlan) return;
+    if (!success) return;
+    if (this.activePlan.currentStep < this.activePlan.steps.length) {
+      this.activePlan.steps[this.activePlan.currentStep].status = "done";
+      this.activePlan.currentStep++;
+    }
+  }
+
+  private async trySelfHeal(reason: string): Promise<boolean> {
+    if (!this.activePlan) return false;
+    if (this.activePlan.recoveryAttempts >= this.maxRecoveryAttempts) return false;
+    this.activePlan.recoveryAttempts++;
+    this.onStatus?.(`Self-heal ${this.activePlan.recoveryAttempts}/${this.maxRecoveryAttempts}: ${reason}`);
+    this.history.push({
+      role: "system",
+      content: [
+        "SELF-HEAL MODE:",
+        `Reason: ${reason}`,
+        "Change strategy now. Do not repeat previously repeated tool calls.",
+        "Prefer a different method and then continue the remaining plan steps.",
+      ].join(" "),
+    });
+    return true;
   }
 
   private hydrateUiHistoryFromMemory() {
@@ -165,8 +280,10 @@ export class OpenUnumAgent {
   }
 
   async step(userMessage?: string, sessionId = this.uiSessionId): Promise<string> {
+    let objectiveForMemory = userMessage ?? "";
     if (userMessage) {
       const sanitizedUserMessage = this.sanitizeSensitive(userMessage);
+      objectiveForMemory = sanitizedUserMessage;
       if (sanitizedUserMessage !== userMessage) {
         this.onStatus?.("Sensitive token detected and redacted from memory/history.");
       }
@@ -182,18 +299,29 @@ export class OpenUnumAgent {
         this.onStatus?.("Planning-only request detected. Tool execution disabled for this turn.");
         const plan = await this.planningResponse(sanitizedUserMessage);
         if (plan) {
+          this.activePlan = null;
           return this.finalizeResponse(plan, sessionId);
         }
+      }
+
+      this.activePlan = await this.buildExecutionPlan(sanitizedUserMessage);
+      if (this.activePlan) {
+        this.onStatus?.(`Autonomous plan created (${this.activePlan.steps.length} steps). Executing...`);
+      } else {
+        this.onStatus?.("Plan generation failed. Falling back to direct autonomous execution.");
       }
     }
 
     const startMissionSuccessCount = this.globalSuccessCount; // Fixed PoW logic (Codex Fix)
     let currentRetryCount = 0;
     const toolCallFrequency: Map<string, number> = new Map();
+    const toolUsageCount: Map<string, number> = new Map();
     let toolExecutionCount = 0;
     let lastToolSummary = "";
+    const totalIterationBudget = this.maxIterations + this.maxRecoveryAttempts * 5;
 
-    for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+    iterationLoop:
+    for (let iteration = 0; iteration < totalIterationBudget; iteration++) {
       // Deterministic Pivot: Filter out tools that have failed too many times in this mission
       const availableTools = Array.from(this.tools.values()).filter(t => {
         const fails = this.toolFailureCount.get(t.name) || 0;
@@ -206,19 +334,25 @@ export class OpenUnumAgent {
         parameters: t.parameters,
       }));
 
-      this.onStatus?.(`Iteration ${iteration + 1}/${this.maxIterations}...`);
+      this.onStatus?.(`Iteration ${iteration + 1}/${totalIterationBudget}...`);
 
-      const response = await this.provider.chat(this.history, toolSchemas);
+      const loopMessages = this.activePlan
+        ? [...this.history, { role: "system", content: this.getPlanInstruction() }]
+        : this.history;
+      const response = await this.provider.chat(loopMessages, toolSchemas);
       const assistantMessage = response.choices[0].message;
       const content = assistantMessage.content || "";
 
       this.history.push(assistantMessage);
 
       if (assistantMessage.tool_calls) {
+        let restartWithHeal = false;
         for (const toolCall of assistantMessage.tool_calls) {
           const callSignature = `${toolCall.function.name}:${toolCall.function.arguments ?? ""}`;
           const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
           toolCallFrequency.set(callSignature, signatureCount);
+          const toolNameCount = (toolUsageCount.get(toolCall.function.name) || 0) + 1;
+          toolUsageCount.set(toolCall.function.name, toolNameCount);
 
           if (signatureCount >= 3) {
             const repeatMsg = `REPEAT DETECTED: Tool call "${toolCall.function.name}" repeated ${signatureCount} times with the same arguments. Summarize and provide final answer with current evidence.`;
@@ -229,7 +363,20 @@ export class OpenUnumAgent {
               this.toolFailureCount.clear();
               return this.finalizeResponse(forced, sessionId);
             }
+            if (await this.trySelfHeal(`Repeated tool signature ${toolCall.function.name}`)) {
+              toolCallFrequency.clear();
+              restartWithHeal = true;
+              break;
+            }
             continue;
+          }
+
+          if (toolNameCount >= 6) {
+            if (await this.trySelfHeal(`Tool overuse detected for ${toolCall.function.name}`)) {
+              toolCallFrequency.clear();
+              restartWithHeal = true;
+              break;
+            }
           }
 
           const tool = this.tools.get(toolCall.function.name);
@@ -266,9 +413,10 @@ export class OpenUnumAgent {
             });
             toolExecutionCount++;
             lastToolSummary = `Last tool (${tool.name}) output:\n${result}`;
+            this.markPlanProgress(success);
 
-            if (this.memory && userMessage) {
-              this.memory.addTactic(userMessage, tool.name, result, success, success ? "Verified." : "Pivot Enforced.");
+            if (this.memory && objectiveForMemory) {
+              this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified." : "Pivot Enforced.");
             }
 
             if (!success && currentRetryCount < this.maxRetries) {
@@ -283,12 +431,22 @@ export class OpenUnumAgent {
                 this.toolFailureCount.clear();
                 return this.finalizeResponse(forced, sessionId);
               }
+              if (await this.trySelfHeal("Execution cap reached")) {
+                toolExecutionCount = 0;
+                toolCallFrequency.clear();
+                this.toolFailureCount.clear();
+                restartWithHeal = true;
+                break;
+              }
               this.toolFailureCount.clear();
               return this.finalizeResponse(`Execution cap reached.\n\n${lastToolSummary}`, sessionId);
             }
           }
         }
-        if (iteration === this.maxIterations - 1) {
+        if (restartWithHeal) {
+          continue iterationLoop;
+        }
+        if (iteration === totalIterationBudget - 1) {
           const forced = await this.forceFinalAnswer("You are at the maximum iteration limit. Return the best final answer now using existing tool outputs. Do not output XML tags.");
           if (forced) {
             this.toolFailureCount.clear();
@@ -324,6 +482,7 @@ export class OpenUnumAgent {
       }
 
       this.toolFailureCount.clear(); // Reset for next user command
+      this.activePlan = null;
       if (cleanedContent.length > 0) {
         return this.finalizeResponse(cleanedContent, sessionId);
       }
@@ -334,6 +493,7 @@ export class OpenUnumAgent {
     }
 
     this.toolFailureCount.clear();
+    this.activePlan = null;
     const forced = await this.forceFinalAnswer("Mission reached loop limit. Return a concise final answer now from available evidence.");
     if (forced) {
       return this.finalizeResponse(forced, sessionId);

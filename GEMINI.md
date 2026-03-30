@@ -44,6 +44,8 @@ The agent is explicitly instructed that it **owns the hardware**. If a high-leve
 - Tool executions per request are capped to prevent runaway loops.
 - Raw provider tool-call markup is stripped from user-facing responses.
 - Sensitive GitHub token patterns are redacted before persistence.
+- Autonomous plan-lock mode now creates a step plan and instructs the agent to execute it without further user input.
+- Self-heal retries inject corrective strategy instructions before giving up.
 
 ### Ghost "Poke" System
 If the agent is stuck in a loop, the `GhostMonitor` detects the pattern in the database and injects a `[GHOST POKE]` message into the system prompt, forcing a radical strategy change (e.g., "Switch to Terminal immediately").

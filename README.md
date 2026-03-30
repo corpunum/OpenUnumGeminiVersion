@@ -24,6 +24,11 @@ A high-performance, real-time Web UI (`http://localhost:3000`) that provides:
 - **Persistent Chat History**: Conversations are stored locally and restored after browser refresh.
 - **Explicit Reset**: Type `/new` in chat to clear history and start a clean session.
 
+### 🤖 Autonomous Execution Mode
+- The agent now auto-generates an execution plan per request and attempts to follow it step-by-step.
+- Self-healing is built in: repeated-tool loops trigger recovery prompts and strategy pivots.
+- Safety caps remain enabled to prevent runaway tool execution.
+
 ### 💻 Hardware & Software Ownership
 The agent is explicitly authorized to own the system. If a tool is missing, it installs it. If a website is slow, it pivots to `aria2`, `curl`, or `huggingface-cli` to get the job done.
 
