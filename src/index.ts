@@ -62,10 +62,8 @@ async function main() {
     if (input.toLowerCase() === "exit") break;
 
     try {
-      const response = await agent.step(input);
+      const response = await agent.step(input, "cli");
       console.log(`\nOpenUnum: ${response}\n`);
-      memory.addMessage("default", "user", input);
-      memory.addMessage("default", "assistant", response);
     } catch (err: any) {
       console.error(`Error: ${err.message}`);
     }

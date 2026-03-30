@@ -20,7 +20,9 @@ OpenUnum does not trust its own "I am done" claims. It must **prove** completion
 A high-performance, real-time Web UI (`http://localhost:3000`) that provides:
 - **Interactive Tool Cards**: Expandable blocks showing raw tool calls, parameters, and results.
 - **Pulsing Telemetry**: Live status updates showing the agent's internal "thinking" and "iteration" cycles.
-- **Dynamic Configuration**: Hot-swap LLM providers (Ollama, OpenRouter, OpenAI) without restarting.
+- **Dynamic Configuration**: Hot-swap LLM providers (Ollama, NVIDIA, OpenRouter, OpenAI) without restarting.
+- **Persistent Chat History**: Conversations are stored locally and restored after browser refresh.
+- **Explicit Reset**: Type `/new` in chat to clear history and start a clean session.
 
 ### 💻 Hardware & Software Ownership
 The agent is explicitly authorized to own the system. If a tool is missing, it installs it. If a website is slow, it pivots to `aria2`, `curl`, or `huggingface-cli` to get the job done.
@@ -30,10 +32,10 @@ The agent is explicitly authorized to own the system. If a tool is missing, it i
 ## 🛠️ System Architecture
 
 ### Neural Core (`src/core/`)
-- **`agent.ts`**: Implements a robust `while` loop (limited to 15 iterations) to handle complex, multi-pivot tasks without stack overflows.
-- **`providers.ts`**: Strictly handles OpenAI-compatible tool-calling protocols.
+- **`agent.ts`**: Implements a bounded autonomous loop with anti-loop guards, execution caps, planning-only mode detection, and safe final-response fallback.
+- **`providers.ts`**: Handles OpenAI-compatible chat and dynamic model discovery (`/models`) across providers.
 - **`ghost.ts`**: The external "nudge" loop for active failure recovery.
-- **`memory.ts`**: Manages persistent SQLite storage for chat history and tactics.
+- **`memory.ts`**: Manages persistent SQLite storage for chat history, tactics, and explicit session resets.
 
 ### Tool Arsenal (`src/tools/`)
 - **Execution**: Bun-native `spawn` for safe terminal interaction.
@@ -53,6 +55,10 @@ Run the autonomous installer to set up the Bun runtime, dependencies, and system
 ### 2. Launching the UI
 Open your browser to:
 `http://localhost:3000`
+
+### 2.1 Chat Persistence
+- Refresh-safe history is loaded automatically from local SQLite.
+- Use `/new` in the chat box to clear only the active UI session.
 
 ### 3. Running via CLI
 ```bash

@@ -1,5 +1,3 @@
-import { fetch } from "bun";
-
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content?: string;
@@ -7,21 +5,37 @@ export interface ChatMessage {
   tool_call_id?: string;
 }
 
-export class ModelProvider {
-  private config: {
-    provider: string;
-    baseUrl: string;
-    apiKey?: string;
-    model: string;
-  };
+export interface ModelProviderConfig {
+  provider: string;
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+}
 
-  constructor(config: {
-    provider: string;
-    baseUrl: string;
-    apiKey?: string;
-    model: string;
-  }) {
+export class ModelProvider {
+  private config: ModelProviderConfig;
+
+  constructor(config: ModelProviderConfig) {
     this.config = config;
+  }
+
+  updateConfig(config: Partial<ModelProviderConfig>) {
+    this.config = {
+      ...this.config,
+      ...config,
+    };
+  }
+
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (this.config.apiKey && this.config.apiKey !== "ollama-local") {
+      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+    }
+
+    return headers;
   }
 
   async chat(messages: ChatMessage[], tools?: any[]) {
@@ -52,17 +66,9 @@ export class ModelProvider {
       payload.tool_choice = "auto";
     }
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-
-    if (this.config.apiKey && this.config.apiKey !== "ollama-local") {
-      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
-    }
-
     const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
       method: "POST",
-      headers,
+      headers: this.getAuthHeaders(),
       body: JSON.stringify(payload),
     });
 
@@ -72,5 +78,24 @@ export class ModelProvider {
     }
 
     return await response.json();
+  }
+
+  async listModels(): Promise<string[]> {
+    try {
+      const response = await fetch(`${this.config.baseUrl}/models`, {
+        method: "GET",
+        headers: this.getAuthHeaders(),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) {
+        return [];
+      }
+
+      const json = await response.json() as { data?: { id?: string }[] };
+      const modelIds = json.data?.map(item => item.id).filter(Boolean) as string[] | undefined;
+      return modelIds ?? [];
+    } catch {
+      return [];
+    }
   }
 }

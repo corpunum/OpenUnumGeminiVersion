@@ -8,12 +8,13 @@ OpenUnum is a minimalist, high-performance AI assistant designed for deep integr
 ## 🛠 Project Architecture
 
 ### 1. Neural Core (`src/core/`)
-- **`agent.ts`**: The central brain. Implements an autonomous "Step" loop with recursive tool handling and a `maxRetries` logic. It uses a `TacticalContext` to learn from past failures before acting.
+- **`agent.ts`**: The central brain. Implements a bounded autonomous "Step" loop with tactical context, deterministic pivots, anti-loop repetition detection, execution caps, planning-only mode, and final-answer forcing.
 - **`memory.ts`**: SQLite-backed persistent memory. 
     - `messages`: Standard chat history.
     - `tactics`: The "Tactical Ledger." Stores every tool call's objective, action, outcome, and success status.
+- **Session Behavior**: UI chat is persisted under session `ui` and is only cleared when `/new` is invoked.
 - **`ghost.ts`**: The **Ghost Monitor**. A background process that "pokes" the agent via the system channel if it detects a pattern of 3+ failures, mandating a strategy pivot.
-- **`providers.ts`**: Model-agnostic interface supporting Ollama, OpenRouter, NVIDIA, and OpenAI.
+- **`providers.ts`**: Model-agnostic interface supporting Ollama, OpenRouter, NVIDIA, and OpenAI; includes model listing for provider dropdown population.
 
 ### 2. Tool Arsenal (`src/tools/`)
 - **`exec.ts`**: Bun-native terminal execution. Allows the agent to run any shell command, install packages (`apt`), or manage services.
@@ -23,7 +24,7 @@ OpenUnum is a minimalist, high-performance AI assistant designed for deep integr
 ### 3. Control Center (`src/ui/`)
 - **`server.ts`**: A Bun-based WebSocket/HTTP server.
     - **Port**: 3000 (default).
-    - **Features**: Real-time status streaming, expandable "Tool Deployed" cards, and interactive configuration hot-swapping.
+    - **Features**: Real-time status streaming, expandable "Tool Deployed" cards, interactive configuration hot-swapping, dynamic model loading, persisted chat history restore, and `/new` session reset.
 
 ---
 
@@ -37,6 +38,12 @@ The agent is explicitly instructed that it **owns the hardware**. If a high-leve
 2. **Strategy Formed**: Agent avoids "FAILED" actions and repeats "SUCCESSFUL" ones.
 3. **Action Taken**: Result is recorded in the ledger.
 4. **Failure Analysis**: If a tool fails, the agent records the error, increments a retry counter, and **re-steps itself** with a revised strategy.
+
+### Safety & Stability Controls
+- Repeated identical tool calls are detected and short-circuited to forced final responses.
+- Tool executions per request are capped to prevent runaway loops.
+- Raw provider tool-call markup is stripped from user-facing responses.
+- Sensitive GitHub token patterns are redacted before persistence.
 
 ### Ghost "Poke" System
 If the agent is stuck in a loop, the `GhostMonitor` detects the pattern in the database and injects a `[GHOST POKE]` message into the system prompt, forcing a radical strategy change (e.g., "Switch to Terminal immediately").

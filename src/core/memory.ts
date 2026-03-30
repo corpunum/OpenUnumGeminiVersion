@@ -72,6 +72,10 @@ export class MemoryManager {
     return this.db.query("SELECT * FROM messages WHERE session_id = ?").all(session_id) as MemoryEntry[];
   }
 
+  clearMessages(session_id: string) {
+    this.db.run("DELETE FROM messages WHERE session_id = ?", [session_id]);
+  }
+
   set(key: string, value: string) {
     this.db.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [key, value]);
   }
