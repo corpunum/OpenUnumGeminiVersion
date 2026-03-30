@@ -32,6 +32,7 @@ A high-performance, real-time Web UI (`http://localhost:3000`) that provides:
 - Large tool outputs are truncated to keep provider context stable.
 - Provider transient failures (`500`/`429`) are retried with degraded context fallback.
 - Recovery fallback messages now return concise evidence summaries (not full raw dumps).
+- Automatic model failover attempts backup models when the configured model keeps failing.
 
 ### 💻 Hardware & Software Ownership
 The agent is explicitly authorized to own the system. If a tool is missing, it installs it. If a website is slow, it pivots to `aria2`, `curl`, or `huggingface-cli` to get the job done.

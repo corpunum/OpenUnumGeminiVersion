@@ -51,6 +51,7 @@ The agent is explicitly instructed that it **owns the hardware**. If a high-leve
 - Oversized tool outputs are truncated before entering chat context.
 - If provider retries still fail, agent returns best available evidence instead of throwing raw UI errors.
 - Evidence fallback is summarized to avoid flooding the UI with full raw file/tool output.
+- Model failover now attempts provider-specific fallback models automatically when the active model remains unstable.
 
 ### Ghost "Poke" System
 If the agent is stuck in a loop, the `GhostMonitor` detects the pattern in the database and injects a `[GHOST POKE]` message into the system prompt, forcing a radical strategy change (e.g., "Switch to Terminal immediately").

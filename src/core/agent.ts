@@ -266,6 +266,11 @@ export class OpenUnumAgent {
       "just plan",
       "architecture plan",
       "then we continue",
+      "take ownership",
+      "autonomous",
+      "autonomsly",
+      "roadmap",
+      "design first",
     ];
     return planSignals.some(signal => t.includes(signal));
   }
@@ -374,12 +379,12 @@ export class OpenUnumAgent {
           continue;
         }
         if (lastToolSummary) {
-          this.onStatus?.("Provider unavailable. Returning best available evidence.");
+          this.onStatus?.("Recovered via fallback evidence (provider unstable).");
           this.activePlan = null;
-          return this.finalizeResponse(`Provider temporarily unavailable.\n\n${lastToolSummary}`, sessionId);
+          return this.finalizeResponse(`Recovered via fallback evidence.\n\n${lastToolSummary}`, sessionId);
         }
         this.activePlan = null;
-        return this.finalizeResponse("Provider temporarily unavailable after retries. Automatic recovery failed for this turn.", sessionId);
+        return this.finalizeResponse("Provider was unstable and no evidence was available for fallback. Please retry.", sessionId);
       }
       const assistantMessage = response.choices[0].message;
       const content = assistantMessage.content || "";

@@ -72,17 +72,48 @@ export class ModelProvider {
     }));
   }
 
-  async chat(messages: ChatMessage[], tools?: any[]) {
-    // Ensure we are sending a clean messages array without circular refs or extra fields
-    const sanitizedMessages = this.compactMessages(messages);
+  private candidateFallbackModels(): string[] {
+    const provider = this.config.provider;
+    const current = this.config.model;
 
+    const defaults: Record<string, string[]> = {
+      ollama: [
+        "qwen3.5:397b-cloud",
+        "kimi-k2.5:cloud",
+        "glm-5:cloud",
+        "qwen3.5:9b-64k",
+        "uncensored:latest",
+      ],
+      nvidia: [
+        "meta/llama-3.3-70b-instruct",
+        "mistralai/mistral-large",
+        "qwen/qwen3.5-122b-a10b",
+      ],
+      openrouter: [
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3.5-sonnet",
+      ],
+      openai: [
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+      ],
+    };
+
+    return (defaults[provider] ?? []).filter(m => m !== current);
+  }
+
+  private async sendChatRequest(
+    model: string,
+    messages: ChatMessage[],
+    tools?: any[],
+    attempts = 2,
+  ): Promise<any> {
     const payload: any = {
-      model: this.config.model,
-      messages: sanitizedMessages,
+      model,
+      messages,
       stream: false,
     };
 
-    // Explicitly send tool schemas if provided (Codex Fix)
     if (tools && tools.length > 0) {
       payload.tools = tools.map(t => ({
         type: "function",
@@ -95,48 +126,55 @@ export class ModelProvider {
       payload.tool_choice = "auto";
     }
 
-    const maxAttempts = 3;
     let lastError = "";
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
         method: "POST",
         headers: this.getAuthHeaders(),
         body: JSON.stringify(payload),
       });
-
       if (response.ok) {
         return await response.json();
       }
-
       const error = await response.text();
       lastError = `Provider Error (${response.status}): ${error}`;
-
       const retryable = response.status >= 500 || response.status === 429;
-      if (!retryable || attempt === maxAttempts) {
-        throw new Error(lastError);
+      if (!retryable || attempt === attempts) {
+        break;
       }
       await this.sleep(300 * attempt);
+    }
+    throw new Error(lastError || "Provider Error: unknown");
+  }
+
+  async chat(messages: ChatMessage[], tools?: any[]) {
+    const sanitizedMessages = this.compactMessages(messages);
+    let lastError = "";
+    try {
+      return await this.sendChatRequest(this.config.model, sanitizedMessages, tools, 3);
+    } catch (err: any) {
+      lastError = String(err?.message ?? err);
     }
 
     // Degraded fallback: smaller context and no tools to recover from provider overload.
     try {
-      const degradedPayload: any = {
-        model: this.config.model,
-        messages: this.minimalMessages(sanitizedMessages),
-        stream: false,
-      };
-      const degraded = await fetch(`${this.config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: this.getAuthHeaders(),
-        body: JSON.stringify(degradedPayload),
-      });
-      if (degraded.ok) {
-        return await degraded.json();
-      }
-      const degradedErr = await degraded.text();
-      lastError = `Provider Error (${degraded.status}): ${degradedErr}`;
+      return await this.sendChatRequest(this.config.model, this.minimalMessages(sanitizedMessages), undefined, 1);
     } catch {
-      // keep lastError
+      // Continue to model failover below.
+    }
+
+    for (const fallbackModel of this.candidateFallbackModels()) {
+      try {
+        return await this.sendChatRequest(fallbackModel, sanitizedMessages, tools, 1);
+      } catch (err: any) {
+        lastError = String(err?.message ?? err);
+      }
+
+      try {
+        return await this.sendChatRequest(fallbackModel, this.minimalMessages(sanitizedMessages), undefined, 1);
+      } catch (err: any) {
+        lastError = String(err?.message ?? err);
+      }
     }
 
     throw new Error(lastError || "Provider Error: unknown");
