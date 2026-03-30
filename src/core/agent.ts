@@ -244,6 +244,13 @@ export class OpenUnumAgent {
     return `${text.slice(0, this.maxToolResultChars)}\n\n[TRUNCATED ${text.length - this.maxToolResultChars} chars]`;
   }
 
+  private summarizeToolResult(toolName: string, text: string): string {
+    const compact = text.replace(/\s+/g, " ").trim();
+    const short = compact.slice(0, 600);
+    const suffix = compact.length > 600 ? "..." : "";
+    return `Last tool (${toolName}) summary: ${short}${suffix}`;
+  }
+
   private sanitizeSensitive(text: string): string {
     return text
       .replace(/\bghp_[A-Za-z0-9]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
@@ -446,7 +453,7 @@ export class OpenUnumAgent {
               content: this.capToolResult(result),
             });
             toolExecutionCount++;
-            lastToolSummary = `Last tool (${tool.name}) output:\n${this.capToolResult(result)}`;
+            lastToolSummary = this.summarizeToolResult(tool.name, this.capToolResult(result));
             this.markPlanProgress(success);
 
             if (this.memory && objectiveForMemory) {
