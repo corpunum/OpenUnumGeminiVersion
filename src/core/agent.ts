@@ -264,107 +264,103 @@ export class OpenUnumAgent {
   }
 
   private async parseAndExecuteXmlToolCalls(content: string, toolCallFrequency: Map<string, number>, toolUsageCount: Map<string, number>, sessionId: string, objectiveForMemory: string, startMissionSuccessCount: number): Promise<{ success: boolean; result?: string; restartWithHeal: boolean }> {
-    // Detect [TOOL_CALL] format
-    const squareBracketMatch = content.match(/\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/i);
-    const xmlMatch = content.match(/<(tool_call|invoke)([^>]*)>([\s\S]*?)<\/\1>/i);
+    const results: { success: boolean; result?: string; restartWithHeal: boolean }[] = [];
     
-    const toolCallMatch = squareBracketMatch || xmlMatch;
-    if (!toolCallMatch) return { success: false, restartWithHeal: false };
-
-    try {
-      let toolName: string | undefined;
-      let toolArgs: any = {};
-      const tagAttributes = xmlMatch ? xmlMatch[2] : "";
-      const tagContent = toolCallMatch[1].trim();
-      
-      // Try parsing as JSON first
-      if (tagContent.startsWith("{") && (tagContent.includes("=>") || tagContent.includes(":"))) {
-        try {
-          // Handle Ruby-like {tool => "name"} format
-          const cleanedJson = tagContent.replace(/=>/g, ":");
-          // Attempt to extract name and args
-          const nameMatch = cleanedJson.match(/tool\s*:\s*["']([^"']+)["']/);
-          if (nameMatch) toolName = nameMatch[1];
-          
-          const argsMatch = cleanedJson.match(/args\s*:\s*\{([\s\S]*)\}/);
-          if (argsMatch) {
-            const argsText = argsMatch[1].trim();
-            if (argsText.includes("--")) {
-              toolArgs = this.parseFlagStyleParameters(argsText);
-            } else {
-              // Try standard JSON parse for the args part
-              try {
-                toolArgs = JSON.parse("{" + argsText + "}");
-              } catch {
-                toolArgs = {};
+    // Pattern to match [TOOL_CALL]...[/TOOL_CALL] or <tool_call>...</tool_call> or <invoke>...</invoke>
+    const toolCallRegex = /(?:\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]|<(tool_call|invoke)([^>]*)>([\s\S]*?)<\/\2>)/gi;
+    
+    let match;
+    while ((match = toolCallRegex.exec(content)) !== null) {
+      try {
+        let toolName: string | undefined;
+        let toolArgs: any = {};
+        
+        // If it was a square bracket match [TOOL_CALL]
+        if (match[1]) {
+          const rawContent = match[1].trim();
+          // Improved Ruby-style {tool => "name", args => { --flag "val" }} parsing
+          if (rawContent.startsWith("{")) {
+            const cleanedContent = rawContent.replace(/=>/g, ":");
+            const nameMatch = cleanedContent.match(/tool\s*:\s*["']([^"']+)["']/);
+            if (nameMatch) toolName = nameMatch[1];
+            
+            // Extract the args block between the FIRST and LAST curly braces for args
+            const argsMatch = cleanedContent.match(/args\s*:\s*\{([\s\S]*)\}/);
+            if (argsMatch) {
+              const argsText = argsMatch[1].trim();
+              if (argsText.includes("--")) {
+                toolArgs = this.parseFlagStyleParameters(argsText);
+              } else {
+                // Try to parse as JSON if possible, otherwise keep empty
+                try { toolArgs = JSON.parse("{" + argsText + "}"); } catch { toolArgs = {}; }
               }
             }
           }
-        } catch (e) {}
-      }
-
-      // If not JSON or name missing, try XML parameter parsing
-      if (!toolName && xmlMatch) {
-        // Extract name from attribute: name="tool_name"
-        const nameMatch = tagAttributes.match(/name=["']([^"']+)["']/);
-        if (nameMatch) toolName = nameMatch[1];
-
-        // Extract parameters: <parameter name="key">value</parameter>
-        const paramRegex = /<parameter\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
-        let match;
-        while ((match = paramRegex.exec(tagContent)) !== null) {
-          toolArgs[match[1]] = match[2].trim();
+        } 
+        // If it was an XML match <tool_call> or <invoke>
+        else if (match[4]) {
+          const tagAttributes = match[3] || "";
+          const tagContent = match[4].trim();
+          
+          if (tagContent.startsWith("{")) {
+            try {
+              const toolCall = JSON.parse(tagContent.replace(/=>/g, ":"));
+              toolName = toolCall.name || toolCall.function?.name;
+              toolArgs = toolCall.parameters || toolCall.arguments || toolCall.function?.arguments || {};
+            } catch {}
+          }
+          
+          if (!toolName) {
+            const nameMatch = tagAttributes.match(/name=["']([^"']+)["']/);
+            if (nameMatch) toolName = nameMatch[1];
+            
+            const paramRegex = /<parameter\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
+            let pMatch;
+            while ((pMatch = paramRegex.exec(tagContent)) !== null) {
+              toolArgs[pMatch[1]] = pMatch[2].trim();
+            }
+          }
         }
-      }
 
-      // Default to 'run_command' if 'command' parameter exists but name is missing
-      if (!toolName && toolArgs.command) {
-        toolName = "run_command";
-      }
+        // Default to 'run_command' if 'command' is present but name is missing
+        if (!toolName && toolArgs.command) toolName = "run_command";
 
-      if (toolName) {
-        toolName = this.resolveToolName(toolName);
-        const callSignature = `${toolName}:${JSON.stringify(toolArgs)}`;
-        const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
-        toolCallFrequency.set(callSignature, signatureCount);
-        const toolNameCount = (toolUsageCount.get(toolName) || 0) + 1;
-        toolUsageCount.set(toolName, toolNameCount);
-
-        const tool = this.tools.get(toolName);
-        if (tool) {
-          this.onStatus?.(`Executing (Tactical): ${tool.name}`);
-          let result: string;
-          let success = true;
-
-          try {
-            result = await tool.execute(toolArgs);
-            if (result.toLowerCase().includes("error") || result.toLowerCase().includes("timeout") || result.toLowerCase().includes("failed")) {
+        if (toolName) {
+          toolName = this.resolveToolName(toolName);
+          const tool = this.tools.get(toolName);
+          if (tool) {
+            this.onStatus?.(`Executing (Tactical): ${tool.name}`);
+            let result: string;
+            let success = true;
+            try {
+              result = await tool.execute(toolArgs);
+              if (result.toLowerCase().includes("error") || result.toLowerCase().includes("timeout") || result.toLowerCase().includes("failed")) {
+                success = false;
+                this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
+              } else {
+                this.globalSuccessCount++;
+              }
+            } catch (err: any) {
+              result = `CRITICAL ERROR: ${err.message}`;
               success = false;
               this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
-            } else {
-              this.globalSuccessCount++;
             }
-          } catch (err: any) {
-            result = `CRITICAL ERROR: ${err.message}`;
-            success = false;
-            this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
+            this.history.push({ role: "tool", tool_call_id: `tactical_${Date.now()}_${Math.random()}`, content: this.capToolResult(result) });
+            if (this.memory && objectiveForMemory) {
+              this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via Tactical Call." : "Pivot Enforced.");
+            }
+            results.push({ success: true, result, restartWithHeal: false });
           }
-
-          this.history.push({
-            role: "tool",
-            tool_call_id: `tactical_${Date.now()}`,
-            content: this.capToolResult(result),
-          });
-
-          if (this.memory && objectiveForMemory) {
-            this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via Tactical Call." : "Pivot Enforced.");
-          }
-
-          return { success: true, result, restartWithHeal: false };
         }
+      } catch (e) {
+        console.error("[Agent] Failed to parse tactical tool call:", e);
       }
-    } catch (e) {
-      console.error("[Agent] Failed to parse tactical tool call:", e);
+    }
+
+    if (results.length > 0) {
+      // Return the overall state (if any failed, handle accordingly)
+      const lastResult = results[results.length - 1];
+      return { success: true, result: lastResult.result, restartWithHeal: false };
     }
 
     return { success: false, restartWithHeal: false };
@@ -375,6 +371,7 @@ export class OpenUnumAgent {
       .replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/gi, "")
       .replace(/<invoke[\s\S]*?<\/invoke>/gi, "")
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+      .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, "")
       .trim();
   }
 
