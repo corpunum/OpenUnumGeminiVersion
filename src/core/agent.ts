@@ -1,5 +1,7 @@
 import { ModelProvider, type ChatMessage } from "./providers.ts";
 import { MemoryManager } from "./memory.ts";
+import { GitSync } from "./git_sync.ts";
+import { HistoryCompactor } from "./compactor.ts";
 
 export interface ToolDefinition {
   name: string;
@@ -631,6 +633,20 @@ export class OpenUnumAgent {
       return await this.finalizeResponse(forced, sessionId);
     }
     return await this.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
+  }
+
+  getHistory() {
+    return this.history;
+  }
+}
+is.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
+  }
+
+  getHistory() {
+    return this.history;
+  }
+}
+imed out after maximum iterations. Partial success recorded.", sessionId);
   }
 
   getHistory() {

@@ -15,11 +15,44 @@ export interface ModelProviderConfig {
 
 export class ModelProvider {
   private config: ModelProviderConfig;
-  private maxMessages = 24;
-  private maxMessageChars = 2000;
 
   constructor(config: ModelProviderConfig) {
     this.config = config;
+  }
+
+  getContextLimit(): number {
+    const model = this.config.model.toLowerCase();
+    
+    // Ollama defaults
+    if (this.config.provider === "ollama") {
+      if (model.includes("qwen") && model.includes("9b")) return 65536;
+      if (model.includes("qwen") && model.includes("32b")) return 32768;
+      if (model.includes("llama-3")) return 8192;
+      return 4096; // Standard baseline for local models
+    }
+
+    // OpenAI/OpenRouter defaults
+    if (model.includes("gpt-4o")) return 128000;
+    if (model.includes("gpt-4")) return 8192;
+    if (model.includes("claude-3")) return 200000;
+    if (model.includes("gemini")) return 1000000;
+    
+    return 4096; // Conservative fallback
+  }
+
+  /**
+   * Simple character-based token estimation (4 chars ~= 1 token)
+   */
+  estimateTokenCount(messages: ChatMessage[]): number {
+    let charCount = 0;
+    for (const m of messages) {
+      charCount += (m.role?.length ?? 0);
+      charCount += (m.content?.length ?? 0);
+      if (m.tool_calls) {
+        charCount += JSON.stringify(m.tool_calls).length;
+      }
+    }
+    return Math.ceil(charCount / 4);
   }
 
   updateConfig(config: Partial<ModelProviderConfig>) {
@@ -43,69 +76,6 @@ export class ModelProvider {
 
   private async sleep(ms: number) {
     await new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  private compactMessages(messages: ChatMessage[]): ChatMessage[] {
-    const truncated = messages.map(m => ({
-      role: m.role,
-      content: (m.content ?? "").slice(0, this.maxMessageChars),
-      ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
-      ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
-    }));
-
-    if (truncated.length <= this.maxMessages) {
-      return truncated;
-    }
-
-    const firstSystem = truncated.find(m => m.role === "system");
-    const tail = truncated.slice(-(this.maxMessages - (firstSystem ? 1 : 0)));
-    return firstSystem ? [firstSystem, ...tail] : tail;
-  }
-
-  private minimalMessages(messages: ChatMessage[]): ChatMessage[] {
-    const firstSystem = messages.find(m => m.role === "system");
-    const tail = messages.slice(-6);
-    const base = firstSystem ? [firstSystem, ...tail] : tail;
-    return base.map(m => ({
-      role: m.role,
-      content: (m.content ?? "").slice(0, 1200),
-      ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
-    }));
-  }
-
-  private candidateFallbackModels(): string[] {
-    const provider = this.config.provider;
-    const current = this.config.model;
-    const configuredFallback = this.config.fallbackModel?.trim();
-
-    const defaults: Record<string, string[]> = {
-      ollama: [
-        "qwen3.5:397b-cloud",
-        "kimi-k2.5:cloud",
-        "glm-5:cloud",
-        "qwen3.5:9b-64k",
-        "uncensored:latest",
-      ],
-      nvidia: [
-        "meta/llama-3.3-70b-instruct",
-        "mistralai/mistral-large",
-        "qwen/qwen3.5-122b-a10b",
-      ],
-      openrouter: [
-        "openai/gpt-4o-mini",
-        "anthropic/claude-3.5-sonnet",
-      ],
-      openai: [
-        "gpt-4o-mini",
-        "gpt-4.1-mini",
-      ],
-    };
-
-    const candidates = [...(defaults[provider] ?? [])];
-    if (configuredFallback && configuredFallback !== current) {
-      candidates.unshift(configuredFallback);
-    }
-    return Array.from(new Set(candidates)).filter(m => m !== current);
   }
 
   private async sendChatRequest(
@@ -154,36 +124,70 @@ export class ModelProvider {
   }
 
   async chat(messages: ChatMessage[], tools?: any[]) {
-    const sanitizedMessages = this.compactMessages(messages);
     let lastError = "";
     try {
-      return await this.sendChatRequest(this.config.model, sanitizedMessages, tools, 3);
+      return await this.sendChatRequest(this.config.model, messages, tools, 3);
     } catch (err: any) {
       lastError = String(err?.message ?? err);
     }
 
-    // Degraded fallback: smaller context and no tools to recover from provider overload.
+    // Degraded fallback: minimal context to recover
     try {
-      return await this.sendChatRequest(this.config.model, this.minimalMessages(sanitizedMessages), undefined, 1);
+      return await this.sendChatRequest(this.config.model, messages.slice(-5), undefined, 1);
     } catch {
       // Continue to model failover below.
     }
 
     for (const fallbackModel of this.candidateFallbackModels()) {
       try {
-        return await this.sendChatRequest(fallbackModel, sanitizedMessages, tools, 1);
+        return await this.sendChatRequest(fallbackModel, messages, tools, 1);
       } catch (err: any) {
         lastError = String(err?.message ?? err);
       }
 
       try {
-        return await this.sendChatRequest(fallbackModel, this.minimalMessages(sanitizedMessages), undefined, 1);
+        return await this.sendChatRequest(fallbackModel, messages.slice(-5), undefined, 1);
       } catch (err: any) {
         lastError = String(err?.message ?? err);
       }
     }
 
     throw new Error(lastError || "Provider Error: unknown");
+  }
+
+  private candidateFallbackModels(): string[] {
+    const provider = this.config.provider;
+    const current = this.config.model;
+    const configuredFallback = this.config.fallbackModel?.trim();
+
+    const defaults: Record<string, string[]> = {
+      ollama: [
+        "qwen3.5:397b-cloud",
+        "kimi-k2.5:cloud",
+        "glm-5:cloud",
+        "qwen3.5:9b-64k",
+        "uncensored:latest",
+      ],
+      nvidia: [
+        "meta/llama-3.3-70b-instruct",
+        "mistralai/mistral-large",
+        "qwen/qwen3.5-122b-a10b",
+      ],
+      openrouter: [
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3.5-sonnet",
+      ],
+      openai: [
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+      ],
+    };
+
+    const candidates = [...(defaults[provider] ?? [])];
+    if (configuredFallback && configuredFallback !== current) {
+      candidates.unshift(configuredFallback);
+    }
+    return Array.from(new Set(candidates)).filter(m => m !== current);
   }
 
   async listModels(): Promise<string[]> {

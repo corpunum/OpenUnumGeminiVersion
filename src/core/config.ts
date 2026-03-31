@@ -77,42 +77,30 @@ export class ConfigManager {
           ...this.currentConfig.gateways.telegram,
           ...(config.gateways?.telegram ?? {}),
         },
-        whatsapp: {
-          ...this.currentConfig.gateways.whatsapp,
-          ...(config.gateways?.whatsapp ?? {}),
-        },
-      },
-      ui: {
-        ...this.currentConfig.ui,
-        ...(config.ui ?? {}),
       },
     });
     this.memory.set("config", JSON.stringify(this.currentConfig));
   }
 
-  private normalizeConfig(config?: Partial<OpenUnumConfig>): OpenUnumConfig {
+  private normalizeConfig(partial?: Partial<OpenUnumConfig>): OpenUnumConfig {
     return {
-      ...DEFAULT_CONFIG,
-      ...(config ?? {}),
       model: {
         ...DEFAULT_CONFIG.model,
-        ...(config?.model ?? {}),
+        ...partial?.model,
       },
       gateways: {
-        ...DEFAULT_CONFIG.gateways,
-        ...(config?.gateways ?? {}),
         telegram: {
           ...DEFAULT_CONFIG.gateways.telegram,
-          ...(config?.gateways?.telegram ?? {}),
+          ...partial?.gateways?.telegram,
         },
         whatsapp: {
           ...DEFAULT_CONFIG.gateways.whatsapp,
-          ...(config?.gateways?.whatsapp ?? {}),
+          ...partial?.gateways?.whatsapp,
         },
       },
       ui: {
         ...DEFAULT_CONFIG.ui,
-        ...(config?.ui ?? {}),
+        ...partial?.ui,
       },
     };
   }
