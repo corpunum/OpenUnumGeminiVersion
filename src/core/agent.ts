@@ -31,7 +31,7 @@ export class OpenUnumAgent {
   private systemPrompt: string;
   private readonly uiSessionId = "ui";
   private maxRetries = 5;
-  private maxIterations = 15; // Increased for complex tasks
+  private maxIterations = 50; // Increased for complex tasks
   private maxToolResultChars = 5000;
   private globalSuccessCount = 0; // Persistent across the entire session
   private toolFailureCount: Map<string, number> = new Map(); // For Deterministic Pivot
@@ -705,3 +705,4 @@ is.finalizeResponse("Mission timed out after maximum iterations. Partial success
     return this.history;
   }
 }
+
