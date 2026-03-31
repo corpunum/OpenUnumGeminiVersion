@@ -324,7 +324,7 @@ export class OpenUnumAgent {
         const plan = await this.planningResponse(sanitizedUserMessage);
         if (plan) {
           this.activePlan = null;
-          return this.finalizeResponse(plan, sessionId);
+          return await this.finalizeResponse(plan, sessionId);
         }
       }
 
@@ -383,10 +383,10 @@ export class OpenUnumAgent {
         if (lastToolSummary) {
           this.onStatus?.("Recovered via fallback evidence (provider unstable).");
           this.activePlan = null;
-          return this.finalizeResponse(`Recovered via fallback evidence.\n\n${lastToolSummary}`, sessionId);
+          return await this.finalizeResponse(`Recovered via fallback evidence.\n\n${lastToolSummary}`, sessionId);
         }
         this.activePlan = null;
-        return this.finalizeResponse("Provider was unstable and no evidence was available for fallback. Please retry.", sessionId);
+        return await this.finalizeResponse("Provider was unstable and no evidence was available for fallback. Please retry.", sessionId);
       }
       const assistantMessage = response.choices[0].message;
       const content = assistantMessage.content || "";
@@ -409,7 +409,7 @@ export class OpenUnumAgent {
             const forced = await this.forceFinalAnswer("Return a final answer now. Do not call any more tools unless absolutely required.");
             if (forced) {
               this.toolFailureCount.clear();
-              return this.finalizeResponse(forced, sessionId);
+              return await this.finalizeResponse(forced, sessionId);
             }
             if (await this.trySelfHeal(`Repeated tool signature ${toolCall.function.name}`)) {
               toolCallFrequency.clear();
@@ -477,7 +477,7 @@ export class OpenUnumAgent {
               const forced = await this.forceFinalAnswer("Stop calling tools. Return a direct final answer now based on the gathered evidence.");
               if (forced) {
                 this.toolFailureCount.clear();
-                return this.finalizeResponse(forced, sessionId);
+                return await this.finalizeResponse(forced, sessionId);
               }
               if (await this.trySelfHeal("Execution cap reached")) {
                 toolExecutionCount = 0;
@@ -487,7 +487,7 @@ export class OpenUnumAgent {
                 break;
               }
               this.toolFailureCount.clear();
-              return this.finalizeResponse(`Execution cap reached.\n\n${lastToolSummary}`, sessionId);
+              return await this.finalizeResponse(`Execution cap reached.\n\n${lastToolSummary}`, sessionId);
             }
           }
         }
@@ -498,11 +498,11 @@ export class OpenUnumAgent {
           const forced = await this.forceFinalAnswer("You are at the maximum iteration limit. Return the best final answer now using existing tool outputs. Do not output XML tags.");
           if (forced) {
             this.toolFailureCount.clear();
-            return this.finalizeResponse(forced, sessionId);
+            return await this.finalizeResponse(forced, sessionId);
           }
           if (lastToolSummary) {
             this.toolFailureCount.clear();
-            return this.finalizeResponse(`Iteration limit reached.\n\n${lastToolSummary}`, sessionId);
+            return await this.finalizeResponse(`Iteration limit reached.\n\n${lastToolSummary}`, sessionId);
           }
         }
         continue;
@@ -512,7 +512,7 @@ export class OpenUnumAgent {
         const forced = await this.forceFinalAnswer("Do not output tool-call XML. Return plain text final answer only.");
         if (forced) {
           this.toolFailureCount.clear();
-          return this.finalizeResponse(forced, sessionId);
+          return await this.finalizeResponse(forced, sessionId);
         }
       }
 
@@ -532,21 +532,21 @@ export class OpenUnumAgent {
       this.toolFailureCount.clear(); // Reset for next user command
       this.activePlan = null;
       if (cleanedContent.length > 0) {
-        return this.finalizeResponse(cleanedContent, sessionId);
+        return await this.finalizeResponse(cleanedContent, sessionId);
       }
       if (lastToolSummary) {
-        return this.finalizeResponse(`Completed with tool evidence.\n\n${lastToolSummary}`, sessionId);
+        return await this.finalizeResponse(`Completed with tool evidence.\n\n${lastToolSummary}`, sessionId);
       }
-      return this.finalizeResponse("Task completed, but the model returned an empty final message.", sessionId);
+      return await this.finalizeResponse("Task completed, but the model returned an empty final message.", sessionId);
     }
 
     this.toolFailureCount.clear();
     this.activePlan = null;
     const forced = await this.forceFinalAnswer("Mission reached loop limit. Return a concise final answer now from available evidence.");
     if (forced) {
-      return this.finalizeResponse(forced, sessionId);
+      return await this.finalizeResponse(forced, sessionId);
     }
-    return this.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
+    return await this.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
   }
 
   getHistory() {
