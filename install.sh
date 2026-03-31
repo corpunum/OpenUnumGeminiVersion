@@ -21,11 +21,11 @@ echo "Installing project dependencies..."
 bun install
 
 # 4. Setup Systemd Service
-echo "Configuring OpenUnum service..."
+echo "Configuring OpenUnum Gemini service..."
 mkdir -p ~/.config/systemd/user/
-cat <<EOF > ~/.config/systemd/user/openunum.service
+cat <<EOF > ~/.config/systemd/user/openunumgemini.service
 [Unit]
-Description=OpenUnum Gemini Version - Minimalist AI Assistant
+Description=OpenUnum Gemini Version - Dedicated Assistant
 After=network.target
 
 [Service]
@@ -42,12 +42,12 @@ EOF
 
 # 5. Start Service
 systemctl --user daemon-reload
-systemctl --user enable openunum.service
-systemctl --user restart openunum.service
+systemctl --user enable openunumgemini.service
+systemctl --user restart openunumgemini.service
 
 echo ""
 echo "--- Installation Complete! ---"
-echo "OpenUnum is now running as a background service."
+echo "OpenUnum Gemini is now running as a background service."
 echo "Access the Control Center at: http://localhost:3000"
-echo "Check status: systemctl --user status openunum.service"
-echo "View logs: journalctl --user -u openunum.service -f"
+echo "Check status: systemctl --user status openunumgemini.service"
+echo "View logs: journalctl --user -u openunumgemini.service -f"
