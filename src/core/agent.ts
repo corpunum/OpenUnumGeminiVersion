@@ -27,14 +27,16 @@ export class OpenUnumAgent {
   private provider: ModelProvider;
   private tools: Map<string, ToolDefinition>;
   private history: ChatMessage[] = [];
-  private memory?: MemoryManager;
+  public memory?: MemoryManager;
+  private gitSync: GitSync;
+  private compactor: HistoryCompactor;
   private systemPrompt: string;
   private readonly uiSessionId = "ui";
   private maxRetries = 5;
-  private maxIterations = 50; // Increased for complex tasks
+  private maxIterations = 50;
   private maxToolResultChars = 5000;
-  private globalSuccessCount = 0; // Persistent across the entire session
-  private toolFailureCount: Map<string, number> = new Map(); // For Deterministic Pivot
+  private globalSuccessCount = 0;
+  private toolFailureCount: Map<string, number> = new Map();
   private activePlan: ExecutionPlan | null = null;
   private maxRecoveryAttempts = 2;
   public onStatus?: (status: string) => void;
@@ -43,6 +45,7 @@ export class OpenUnumAgent {
     this.provider = provider;
     this.memory = memory;
     this.gitSync = new GitSync();
+    this.compactor = new HistoryCompactor(provider);
     this.systemPrompt = systemPrompt;
     this.tools = new Map();
     this.history.push({ role: "system", content: systemPrompt });
@@ -63,9 +66,18 @@ export class OpenUnumAgent {
     });
   }
 
+  public getHistoryForSession(sessionId: string): { role: "user" | "assistant"; content: string }[] {
+    if (!this.memory) return [];
+    const messages = this.memory.getMessages(sessionId);
+    return messages
+      .filter(m => m.role === "user" || m.role === "assistant")
+      .map(m => ({ role: m.role as "user" | "assistant", content: m.content }))
+      .reverse();
+  }
+
   private async getTacticalContext(objective: string): Promise<string> {
     if (!this.memory) return "";
-    const tactics = this.memory.getTactics(objective);
+    const tactics = this.memory.getSimilarTactics(objective);
     if (tactics.length === 0) return "";
 
     let context = "\n### PROVEN TACTICS & STRATEGY OUTCOMES (AUDIT TRAIL)\n";
@@ -92,7 +104,7 @@ export class OpenUnumAgent {
         }));
       }
     } catch {
-      // Fallback to line parsing below.
+      // Fallback to line parsing
     }
 
     const lines = text
@@ -182,7 +194,7 @@ export class OpenUnumAgent {
     const persisted = this.memory.getMessages(this.uiSessionId);
     for (const message of persisted) {
       if (message.role === "user" || message.role === "assistant") {
-        this.history.push({ role: message.role, content: message.content });
+        this.history.push({ role: message.role as any, content: message.content });
       }
     }
   }
@@ -193,28 +205,20 @@ export class OpenUnumAgent {
     this.memory.addMessage(sessionId, role, content);
   }
 
-  private finalizeResponse(text: string, sessionId: string): string {
+  private async finalizeResponse(text: string, sessionId: string): Promise<string> {
     this.persistMessage(sessionId, "assistant", text);
+    await this.gitSync.sync(`Mission: ${this.activePlan?.objective || "Direct action completed"}`);
     return text;
   }
 
   getUiHistory(): { role: "user" | "assistant"; content: string }[] {
-    if (this.memory) {
-      return this.memory
-        .getMessages(this.uiSessionId)
-        .filter(m => m.role === "user" || m.role === "assistant")
-        .map(m => ({ role: m.role as "user" | "assistant", content: m.content }));
-    }
-
-    return this.history
-      .filter(m => m.role === "user" || m.role === "assistant")
-      .map(m => ({ role: m.role as "user" | "assistant", content: m.content ?? "" }));
+    return this.getHistoryForSession(this.uiSessionId);
   }
 
   resetUiHistory() {
     this.history = [{ role: "system", content: this.systemPrompt }];
     if (this.memory) {
-      this.memory.clearMessages(this.uiSessionId);
+      // In new multi-session model, we don't clear history, we start a new session
     }
   }
 
@@ -253,7 +257,6 @@ export class OpenUnumAgent {
       if (match) {
         const key = match[1].toLowerCase();
         let value = match[2].trim();
-        // Remove quotes if present
         if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
           value = value.slice(1, -1);
         }
@@ -265,8 +268,6 @@ export class OpenUnumAgent {
 
   private async parseAndExecuteXmlToolCalls(content: string, toolCallFrequency: Map<string, number>, toolUsageCount: Map<string, number>, sessionId: string, objectiveForMemory: string, startMissionSuccessCount: number): Promise<{ success: boolean; result?: string; restartWithHeal: boolean }> {
     const results: { success: boolean; result?: string; restartWithHeal: boolean }[] = [];
-    
-    // Pattern to match [TOOL_CALL]...[/TOOL_CALL] or <tool_call>...</tool_call> or <invoke>...</invoke>
     const toolCallRegex = /(?:\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]|<(tool_call|invoke)([^>]*)>([\s\S]*?)<\/\2>)/gi;
     
     let match;
@@ -275,33 +276,25 @@ export class OpenUnumAgent {
         let toolName: string | undefined;
         let toolArgs: any = {};
         
-        // If it was a square bracket match [TOOL_CALL]
         if (match[1]) {
           const rawContent = match[1].trim();
-          // Improved Ruby-style {tool => "name", args => { --flag "val" }} parsing
           if (rawContent.startsWith("{")) {
             const cleanedContent = rawContent.replace(/=>/g, ":");
             const nameMatch = cleanedContent.match(/tool\s*:\s*["']([^"']+)["']/);
             if (nameMatch) toolName = nameMatch[1];
-            
-            // Extract the args block between the FIRST and LAST curly braces for args
             const argsMatch = cleanedContent.match(/args\s*:\s*\{([\s\S]*)\}/);
             if (argsMatch) {
               const argsText = argsMatch[1].trim();
               if (argsText.includes("--")) {
                 toolArgs = this.parseFlagStyleParameters(argsText);
               } else {
-                // Try to parse as JSON if possible, otherwise keep empty
                 try { toolArgs = JSON.parse("{" + argsText + "}"); } catch { toolArgs = {}; }
               }
             }
           }
-        } 
-        // If it was an XML match <tool_call> or <invoke>
-        else if (match[4]) {
+        } else if (match[4]) {
           const tagAttributes = match[3] || "";
           const tagContent = match[4].trim();
-          
           if (tagContent.startsWith("{")) {
             try {
               const toolCall = JSON.parse(tagContent.replace(/=>/g, ":"));
@@ -309,11 +302,9 @@ export class OpenUnumAgent {
               toolArgs = toolCall.parameters || toolCall.arguments || toolCall.function?.arguments || {};
             } catch {}
           }
-          
           if (!toolName) {
             const nameMatch = tagAttributes.match(/name=["']([^"']+)["']/);
             if (nameMatch) toolName = nameMatch[1];
-            
             const paramRegex = /<parameter\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
             let pMatch;
             while ((pMatch = paramRegex.exec(tagContent)) !== null) {
@@ -322,7 +313,6 @@ export class OpenUnumAgent {
           }
         }
 
-        // Default to 'run_command' if 'command' is present but name is missing
         if (!toolName && toolArgs.command) toolName = "run_command";
 
         if (toolName) {
@@ -358,11 +348,9 @@ export class OpenUnumAgent {
     }
 
     if (results.length > 0) {
-      // Return the overall state (if any failed, handle accordingly)
       const lastResult = results[results.length - 1];
       return { success: true, result: lastResult.result, restartWithHeal: false };
     }
-
     return { success: false, restartWithHeal: false };
   }
 
@@ -395,82 +383,57 @@ export class OpenUnumAgent {
 
   private isPlanningOnlyRequest(text: string): boolean {
     const t = text.toLowerCase();
-    const planSignals = [
-      "first plan",
-      "plan out",
-      "give me a plan",
-      "just plan",
-      "architecture plan",
-      "then we continue",
-      "take ownership",
-      "autonomous",
-      "autonomsly",
-      "roadmap",
-      "design first",
-    ];
+    const planSignals = ["first plan", "plan out", "give me a plan", "just plan", "architecture plan", "then we continue", "take ownership", "autonomous", "autonomsly", "roadmap", "design first"];
     return planSignals.some(signal => t.includes(signal));
   }
 
   private async planningResponse(userText: string): Promise<string | null> {
-    this.history.push({
-      role: "system",
-      content:
-        "PLANNING MODE: Return only a concrete implementation plan. Do not call tools. Do not emit tool-call tags/XML.",
-    });
-    const response = await this.provider.chat([
-      ...this.history,
-      { role: "user", content: userText },
-    ]);
+    this.history.push({ role: "system", content: "PLANNING MODE: Return only a concrete implementation plan. Do not call tools. Do not emit tool-call tags/XML." });
+    const response = await this.provider.chat([...this.history, { role: "user", content: userText }]);
     const content = response?.choices?.[0]?.message?.content;
-    if (!content || typeof content !== "string") {
-      return null;
-    }
+    if (!content || typeof content !== "string") return null;
     const cleaned = this.cleanAssistantContent(content);
-    if (!cleaned) {
-      return null;
-    }
+    if (!cleaned) return null;
     this.history.push({ role: "assistant", content: cleaned });
     return cleaned;
   }
 
   async step(userMessage?: string, sessionId = this.uiSessionId): Promise<string> {
+    const limit = this.provider.getContextLimit();
+    const currentTokens = this.provider.estimateTokenCount(this.history);
+    if (currentTokens > limit * 0.75) {
+      this.onStatus?.(`Context at ${currentTokens} tokens (75% of ${limit}). Compacting...`);
+      this.history = await this.compactor.compact(this.history, limit * 0.25);
+    }
+
     let objectiveForMemory = userMessage ?? "";
     if (userMessage) {
-      const sanitizedUserMessage = this.sanitizeSensitive(userMessage);
-      objectiveForMemory = sanitizedUserMessage;
-      if (sanitizedUserMessage !== userMessage) {
-        this.onStatus?.("Sensitive token detected and redacted from memory/history.");
-      }
-
-      this.history.push({ role: "user", content: sanitizedUserMessage });
-      this.persistMessage(sessionId, "user", sanitizedUserMessage);
-      this.history.push({
-        role: "system",
-        content: "WORKSPACE POLICY: Operate only inside /home/corp-unum/OpenUnumGeminiVersion unless the user explicitly requests another path.",
-      });
-      const tacticalContext = await this.getTacticalContext(sanitizedUserMessage);
-      if (tacticalContext) {
-        this.history.push({ role: "system", content: tacticalContext });
-      }
-
-      if (this.isPlanningOnlyRequest(sanitizedUserMessage)) {
-        this.onStatus?.("Planning-only request detected. Tool execution disabled for this turn.");
-        const plan = await this.planningResponse(sanitizedUserMessage);
-        if (plan) {
-          this.activePlan = null;
-          return await this.finalizeResponse(plan, sessionId);
+      if (this.memory && sessionId !== "ui") {
+        const history = this.memory.getMessages(sessionId, 2);
+        if (history.length <= 1) {
+          const title = userMessage.slice(0, 30) + (userMessage.length > 30 ? "..." : "");
+          this.memory.updateSessionTitle(sessionId, title);
         }
       }
 
-      this.activePlan = await this.buildExecutionPlan(sanitizedUserMessage);
-      if (this.activePlan) {
-        this.onStatus?.(`Autonomous plan created (${this.activePlan.steps.length} steps). Executing...`);
-      } else {
-        this.onStatus?.("Plan generation failed. Falling back to direct autonomous execution.");
+      const sanitizedUserMessage = this.sanitizeSensitive(userMessage);
+      objectiveForMemory = sanitizedUserMessage;
+      this.history.push({ role: "user", content: sanitizedUserMessage });
+      this.persistMessage(sessionId, "user", sanitizedUserMessage);
+      this.history.push({ role: "system", content: "WORKSPACE POLICY: Operate only inside /home/corp-unum/OpenUnumGeminiVersion unless the user explicitly requests another path." });
+      
+      const tacticalContext = await this.getTacticalContext(sanitizedUserMessage);
+      if (tacticalContext) this.history.push({ role: "system", content: tacticalContext });
+
+      if (this.isPlanningOnlyRequest(sanitizedUserMessage)) {
+        const plan = await this.planningResponse(sanitizedUserMessage);
+        if (plan) return await this.finalizeResponse(plan, sessionId);
       }
+
+      this.activePlan = await this.buildExecutionPlan(sanitizedUserMessage);
     }
 
-    const startMissionSuccessCount = this.globalSuccessCount; // Fixed PoW logic (Codex Fix)
+    const startMissionSuccessCount = this.globalSuccessCount;
     let currentRetryCount = 0;
     const toolCallFrequency: Map<string, number> = new Map();
     const toolUsageCount: Map<string, number> = new Map();
@@ -481,23 +444,10 @@ export class OpenUnumAgent {
 
     iterationLoop:
     for (let iteration = 0; iteration < totalIterationBudget; iteration++) {
-      // Deterministic Pivot: Filter out tools that have failed too many times in this mission
-      const availableTools = Array.from(this.tools.values()).filter(t => {
-        const fails = this.toolFailureCount.get(t.name) || 0;
-        return fails < 2; // Deterministic Policy: Fail twice, disable for this mission (Codex Fix)
-      });
+      const availableTools = Array.from(this.tools.values()).filter(t => (this.toolFailureCount.get(t.name) || 0) < 2);
+      const toolSchemas = availableTools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters }));
 
-      const toolSchemas = availableTools.map(t => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      }));
-
-      this.onStatus?.(`Iteration ${iteration + 1}/${totalIterationBudget}...`);
-
-      const loopMessages = this.activePlan
-        ? [...this.history, { role: "system", content: this.getPlanInstruction() }]
-        : this.history;
+      const loopMessages = this.activePlan ? [...this.history, { role: "system", content: this.getPlanInstruction() }] : this.history;
       let response: any;
       try {
         response = await this.provider.chat(loopMessages, toolSchemas);
@@ -505,79 +455,29 @@ export class OpenUnumAgent {
       } catch (err: any) {
         providerFailureCount++;
         const errMsg = String(err?.message ?? err);
-        const transient = errMsg.includes("Provider Error (500)") || errMsg.includes("Provider Error (429)");
-        if (transient && providerFailureCount <= 2) {
-          this.onStatus?.(`Provider transient error detected (${providerFailureCount}/2). Retrying with recovery strategy...`);
-          this.history.push({
-            role: "system",
-            content: "Provider transient error occurred. Continue safely with a shorter context and avoid unnecessary tool calls.",
-          });
+        if ((errMsg.includes("500") || errMsg.includes("429")) && providerFailureCount <= 2) {
+          this.history.push({ role: "system", content: "Provider transient error occurred. Continue safely." });
           continue;
         }
-        if (lastToolSummary) {
-          this.onStatus?.("Recovered via fallback evidence (provider unstable).");
-          this.activePlan = null;
-          return await this.finalizeResponse(`Recovered via fallback evidence.\n\n${lastToolSummary}`, sessionId);
-        }
-        this.activePlan = null;
-        return await this.finalizeResponse("Provider was unstable and no evidence was available for fallback. Please retry.", sessionId);
+        if (lastToolSummary) return await this.finalizeResponse(`Recovered via fallback evidence.\n\n${lastToolSummary}`, sessionId);
+        return await this.finalizeResponse("Provider unstable. Please retry.", sessionId);
       }
+
       const assistantMessage = response.choices[0].message;
       const content = assistantMessage.content || "";
-
       this.history.push(assistantMessage);
 
-      // 1. Handle standard tool calls
       if (assistantMessage.tool_calls) {
         let restartWithHeal = false;
         for (const toolCall of assistantMessage.tool_calls) {
-          const callSignature = `${toolCall.function.name}:${toolCall.function.arguments ?? ""}`;
-          const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
-          toolCallFrequency.set(callSignature, signatureCount);
-          const toolNameCount = (toolUsageCount.get(toolCall.function.name) || 0) + 1;
-          toolUsageCount.set(toolCall.function.name, toolNameCount);
-
-          if (signatureCount >= 3) {
-            const repeatMsg = `REPEAT DETECTED: Tool call "${toolCall.function.name}" repeated ${signatureCount} times with the same arguments. Summarize and provide final answer with current evidence.`;
-            this.onStatus?.("Repeated tool loop detected. Forcing final response...");
-            this.history.push({ role: "system", content: repeatMsg });
-            const forced = await this.forceFinalAnswer("Return a final answer now. Do not call any more tools unless absolutely required.");
-            if (forced) {
-              this.toolFailureCount.clear();
-              return await this.finalizeResponse(forced, sessionId);
-            }
-            if (await this.trySelfHeal(`Repeated tool signature ${toolCall.function.name}`)) {
-              toolCallFrequency.clear();
-              restartWithHeal = true;
-              break;
-            }
-            continue;
-          }
-
-          if (toolNameCount >= 6) {
-            if (await this.trySelfHeal(`Tool overuse detected for ${toolCall.function.name}`)) {
-              toolCallFrequency.clear();
-              restartWithHeal = true;
-              break;
-            }
-          }
-
           const tool = this.tools.get(toolCall.function.name);
           if (tool) {
-            let args: any = {};
-            try {
-              args = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
-            } catch {
-              args = {};
-            }
             this.onStatus?.(`Executing: ${tool.name}`);
-            
             let result: string;
             let success = true;
-
             try {
-              result = await tool.execute(args);
-              if (result.toLowerCase().includes("error") || result.toLowerCase().includes("timeout") || result.toLowerCase().includes("failed")) {
+              result = await tool.execute(toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {});
+              if (result.toLowerCase().includes("error") || result.toLowerCase().includes("failed")) {
                 success = false;
                 this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
               } else {
@@ -588,121 +488,48 @@ export class OpenUnumAgent {
               success = false;
               this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
             }
-
-            this.history.push({
-              role: "tool",
-              tool_call_id: toolCall.id,
-              content: this.capToolResult(result),
-            });
+            this.history.push({ role: "tool", tool_call_id: toolCall.id, content: this.capToolResult(result) });
             toolExecutionCount++;
-            lastToolSummary = this.summarizeToolResult(tool.name, this.capToolResult(result));
+            lastToolSummary = this.summarizeToolResult(tool.name, result);
             this.markPlanProgress(success);
-
-            if (this.memory && objectiveForMemory) {
-              this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified." : "Pivot Enforced.");
-            }
-
-            if (!success && currentRetryCount < this.maxRetries) {
-              currentRetryCount++;
-              this.onStatus?.(`Strategy failed. Pivot in progress...`);
-            }
-
-            if (toolExecutionCount >= 8) {
-              this.onStatus?.("Tool execution cap reached. Forcing final response...");
-              const forced = await this.forceFinalAnswer("Stop calling tools. Return a direct final answer now based on the gathered evidence.");
-              if (forced) {
-                this.toolFailureCount.clear();
-                return await this.finalizeResponse(forced, sessionId);
-              }
-              if (await this.trySelfHeal("Execution cap reached")) {
-                toolExecutionCount = 0;
-                toolCallFrequency.clear();
-                this.toolFailureCount.clear();
-                restartWithHeal = true;
-                break;
-              }
-              this.toolFailureCount.clear();
-              return await this.finalizeResponse(`Execution cap reached.\n\n${lastToolSummary}`, sessionId);
-            }
+            if (this.memory && objectiveForMemory) this.memory.addTactic(objectiveForMemory, tool.name, result, success);
+            if (toolExecutionCount >= 25) break iterationLoop;
           }
         }
-        if (restartWithHeal) {
-          continue iterationLoop;
-        }
+        if (restartWithHeal) continue iterationLoop;
         continue;
       }
 
-      // 2. Handle XML-style tool calls in content
-      const xmlResult = await this.parseAndExecuteXmlToolCalls(
-        content,
-        toolCallFrequency,
-        toolUsageCount,
-        sessionId,
-        objectiveForMemory,
-        startMissionSuccessCount
-      );
+      const xmlResult = await this.parseAndExecuteXmlToolCalls(content, toolCallFrequency, toolUsageCount, sessionId, objectiveForMemory, startMissionSuccessCount);
       if (xmlResult.success) {
         toolExecutionCount++;
-        lastToolSummary = this.summarizeToolResult("xml_tool", this.capToolResult(xmlResult.result || ""));
+        lastToolSummary = this.summarizeToolResult("xml_tool", xmlResult.result || "");
         continue;
       }
 
-      // Final Proof-of-Work check against the entire mission start count (Codex Fix)
       const hasNewProof = this.globalSuccessCount > startMissionSuccessCount;
       const cleanedContent = this.cleanAssistantContent(content);
       const isDone = cleanedContent.toUpperCase().includes("DONE") || cleanedContent.toUpperCase().includes("FINISH");
 
       if (isDone && !hasNewProof && currentRetryCount < this.maxRetries) {
           currentRetryCount++;
-          const msg = "PoW ERROR: You claimed completion without evidence. Re-executing with deterministic CLI fallback.";
-          this.onStatus?.(msg);
-          this.history.push({ role: "system", content: msg });
+          this.history.push({ role: "system", content: "PoW ERROR: You claimed completion without evidence." });
           continue;
       }
 
-      this.toolFailureCount.clear(); // Reset for next user command
+      this.toolFailureCount.clear();
       this.activePlan = null;
-      if (cleanedContent.length > 0) {
-        return await this.finalizeResponse(cleanedContent, sessionId);
-      }
-      if (lastToolSummary) {
-        return await this.finalizeResponse(`Completed with tool evidence.\n\n${lastToolSummary}`, sessionId);
-      }
-      return await this.finalizeResponse("Task completed, but the model returned an empty final message.", sessionId);
+      if (cleanedContent.length > 0) return await this.finalizeResponse(cleanedContent, sessionId);
+      if (lastToolSummary) return await this.finalizeResponse(`Completed with tool evidence.\n\n${lastToolSummary}`, sessionId);
+      return await this.finalizeResponse("Task completed.", sessionId);
     }
 
     this.toolFailureCount.clear();
     this.activePlan = null;
-    const forced = await this.forceFinalAnswer("Mission reached loop limit. Return a concise final answer now from available evidence.");
-    if (forced) {
-      return await this.finalizeResponse(forced, sessionId);
-    }
-    return await this.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
+    return await this.finalizeResponse("Mission limit reached.", sessionId);
   }
 
   getHistory() {
     return this.history;
   }
 }
-is.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
-  }
-
-  getHistory() {
-    return this.history;
-  }
-}
-imed out after maximum iterations. Partial success recorded.", sessionId);
-  }
-
-  getHistory() {
-    return this.history;
-  }
-}
-is.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
-  }
-
-  getHistory() {
-    return this.history;
-  }
-}
-

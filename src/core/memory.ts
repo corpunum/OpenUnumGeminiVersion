@@ -41,6 +41,14 @@ export class MemoryManager {
       )
     `);
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT UNIQUE,
+        title TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS kv (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -83,6 +91,29 @@ export class MemoryManager {
       "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
       [session_id, role, content]
     );
+    // Ensure session exists in sessions table
+    this.db.run(
+      "INSERT OR IGNORE INTO sessions (session_id, title) VALUES (?, ?)",
+      [session_id, "New Chat"]
+    );
+  }
+
+  createSession(session_id: string, title: string = "New Chat") {
+    this.db.run(
+      "INSERT OR REPLACE INTO sessions (session_id, title) VALUES (?, ?)",
+      [session_id, title]
+    );
+  }
+
+  updateSessionTitle(session_id: string, title: string) {
+    this.db.run(
+      "UPDATE sessions SET title = ? WHERE session_id = ?",
+      [title, session_id]
+    );
+  }
+
+  getSessions() {
+    return this.db.query("SELECT session_id, title, created_at FROM sessions ORDER BY created_at DESC").all() as Array<{ session_id: string, title: string, created_at: string }>;
   }
 
   getMessages(session_id: string, limit: number = 50): Array<{ role: string; content: string; timestamp: string }> {

@@ -76,12 +76,21 @@ export function startUiServer(configManager: ConfigManager, agent: OpenUnumAgent
       }
 
       if (url.pathname === "/api/chat/history" && req.method === "GET") {
-        return Response.json({ messages: agent.getUiHistory() });
+        const sessionId = url.searchParams.get("sessionId") || "ui";
+        return Response.json({ messages: agent.getHistoryForSession(sessionId) });
+      }
+
+      if (url.pathname === "/api/chat/sessions" && req.method === "GET") {
+        if (!agent.memory) return Response.json({ sessions: [] });
+        return Response.json({ sessions: agent.memory.getSessions() });
       }
 
       if (url.pathname === "/api/chat/new" && req.method === "POST") {
-        agent.resetUiHistory();
-        return Response.json({ success: true });
+        const newSessionId = `session_${Date.now()}`;
+        if (agent.memory) {
+          agent.memory.createSession(newSessionId, "New Chat");
+        }
+        return Response.json({ success: true, sessionId: newSessionId });
       }
 
       if (url.pathname === "/") {
@@ -99,14 +108,10 @@ export function startUiServer(configManager: ConfigManager, agent: OpenUnumAgent
       async message(ws, message) {
         const data = JSON.parse(message.toString());
         if (data.type === "chat") {
-          if (typeof data.text === "string" && data.text.trim() === "/new") {
-            agent.resetUiHistory();
-            ws.send(JSON.stringify({ type: "response", text: "Started a new chat session. Previous history was cleared." }));
-            return;
-          }
+          const sessionId = data.sessionId || "ui";
           ws.send(JSON.stringify({ type: "status", text: "Analyzing environment and planning task..." }));
           try {
-            const response = await agent.step(data.text, "ui");
+            const response = await agent.step(data.text, sessionId);
             ws.send(JSON.stringify({ type: "response", text: response }));
           } catch (err: any) {
             ws.send(JSON.stringify({ type: "error", text: err.message }));
@@ -135,9 +140,9 @@ function getHtml() {
 
       .sidebar { width: 300px; background: var(--card); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 10; }
       .sidebar-header { padding: 25px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--primary); font-size: 1.1em; letter-spacing: 1px; }
-      .nav { flex: 1; padding: 15px; }
-      .nav-item { padding: 12px 16px; border-radius: 8px; cursor: pointer; margin-bottom: 8px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); font-size: 0.95em; border: 1px solid transparent; }
-      .nav-item:hover { background: #1e1e1e; border-color: #333; }
+      .nav { padding: 15px; }
+      .nav-item { padding: 12px 16px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); font-size: 0.9em; border: 1px solid transparent; color: #aaa; }
+      .nav-item:hover { background: #1e1e1e; border-color: #333; color: white; }
       .nav-item.active { background: rgba(0, 230, 118, 0.1); color: var(--primary); border-color: var(--primary); font-weight: 600; }
 
       .main { flex: 1; display: flex; flex-direction: column; background: var(--bg); position: relative; }
@@ -195,6 +200,13 @@ function getHtml() {
         <div class="nav-item" onclick="showPage('settings', this)">Configuration</div>
         <div class="nav-item" onclick="showPage('browser', this)">Live Telemetry</div>
       </div>
+      <div style="padding: 15px 25px 5px; font-size: 0.75em; color: #555; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700;">Chat Sessions</div>
+      <div id="session-list" style="flex: 1; overflow-y: auto; padding: 10px 15px;">
+        <!-- Sessions loaded here -->
+      </div>
+      <div style="padding: 15px; border-top: 1px solid var(--border);">
+        <button onclick="createNewChat()" style="width: 100%; background: #1a1a1a; border: 1px solid #333; color: white; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 0.9em; transition: all 0.2s;">+ New Chat</button>
+      </div>
     </div>
 
     <div class="main">
@@ -246,6 +258,7 @@ function getHtml() {
 
     <script>
       let ws;
+      let currentSessionId = 'ui';
 
       function connectWS() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -254,6 +267,7 @@ function getHtml() {
           const data = JSON.parse(event.data);
           if (data.type === 'response') {
             addMessage(data.text, 'ai');
+            loadSessions(); // Refresh titles after response
           } else if (data.type === 'status') {
             addStatus(data.text);
           } else if (data.type === 'error') {
@@ -284,27 +298,63 @@ function getHtml() {
         messages.innerHTML = '';
       }
 
-      async function loadChatHistory() {
+      async function loadChatHistory(sessionId = 'ui') {
+        currentSessionId = sessionId;
         try {
-          const res = await fetch('/api/chat/history');
+          const res = await fetch(\`/api/chat/history?sessionId=\${sessionId}\`);
           const data = await res.json();
           const messages = Array.isArray(data.messages) ? data.messages : [];
 
           resetChatMessages();
           if (!messages.length) {
             addMessage('SYSTEM INITIALIZED: Hardware ownership verified. Tactical memory active. How shall I serve you, Master?', 'ai');
-            return;
-          }
-
-          for (const msg of messages) {
-            if (msg.role === 'user' || msg.role === 'assistant') {
+          } else {
+            for (const msg of messages) {
               addMessage(msg.content, msg.role === 'assistant' ? 'ai' : 'user');
             }
           }
+          loadSessions();
         } catch {
           resetChatMessages();
           addMessage('SYSTEM INITIALIZED: Hardware ownership verified. Tactical memory active. How shall I serve you, Master?', 'ai');
         }
+      }
+
+      async function loadSessions() {
+        try {
+          const res = await fetch('/api/chat/sessions');
+          const data = await res.json();
+          const list = document.getElementById('session-list');
+          list.innerHTML = '';
+          
+          data.sessions.forEach(s => {
+            const div = document.createElement('div');
+            div.className = 'nav-item' + (s.session_id === currentSessionId ? ' active' : '');
+            div.style.fontSize = '0.85em';
+            div.style.padding = '10px 12px';
+            div.style.whiteSpace = 'nowrap';
+            div.style.overflow = 'hidden';
+            div.style.textOverflow = 'ellipsis';
+            div.innerText = s.title || 'New Chat';
+            div.onclick = () => {
+              loadChatHistory(s.session_id);
+              showPage('chat');
+            };
+            list.appendChild(div);
+          });
+        } catch (e) {
+          console.error("Failed to load sessions", e);
+        }
+      }
+
+      async function createNewChat() {
+        const res = await fetch('/api/chat/new', { method: 'POST' });
+        const data = await res.json();
+        currentSessionId = data.sessionId;
+        resetChatMessages();
+        addMessage('Started a new chat session. Tactical memory is fresh.', 'ai');
+        loadSessions();
+        showPage('chat');
       }
 
       function addStatus(text) {
@@ -335,21 +385,13 @@ function getHtml() {
         const text = input.value.trim();
         if (!text) return;
 
-        if (text === '/new') {
-          fetch('/api/chat/new', { method: 'POST' })
-            .then(() => loadChatHistory())
-            .catch(() => addMessage('SYSTEM ERROR: Failed to reset chat history.', 'ai'));
-          input.value = '';
-          return;
-        }
-
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           addMessage('SYSTEM ERROR: WebSocket not connected yet.', 'ai');
           return;
         }
 
         addMessage(text, 'user');
-        ws.send(JSON.stringify({ type: 'chat', text: text }));
+        ws.send(JSON.stringify({ type: 'chat', text: text, sessionId: currentSessionId }));
         input.value = '';
       }
 
@@ -489,6 +531,7 @@ function getHtml() {
 
       connectWS();
       loadChatHistory();
+      loadSessions();
     </script>
   </body>
   </html>
