@@ -236,28 +236,75 @@ export class OpenUnumAgent {
     }
   }
 
+  private resolveToolName(name: string): string {
+    const n = name.toLowerCase();
+    if (n === "shell" || n === "terminal" || n === "exec" || n === "bash" || n === "sh") return "run_command";
+    if (n === "file" || n === "files" || n === "cat") return "file_read";
+    if (n === "write") return "file_write";
+    if (n === "browser" || n === "web" || n === "chrome") return "browser_navigate";
+    return name;
+  }
+
+  private parseFlagStyleParameters(text: string): any {
+    const params: any = {};
+    const lines = text.split("\n").map(l => l.trim()).filter(l => l.startsWith("--"));
+    for (const line of lines) {
+      const match = line.match(/^--([a-zA-Z0-9]+)\s+(.*)$/);
+      if (match) {
+        const key = match[1].toLowerCase();
+        let value = match[2].trim();
+        // Remove quotes if present
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        params[key] = value;
+      }
+    }
+    return params;
+  }
+
   private async parseAndExecuteXmlToolCalls(content: string, toolCallFrequency: Map<string, number>, toolUsageCount: Map<string, number>, sessionId: string, objectiveForMemory: string, startMissionSuccessCount: number): Promise<{ success: boolean; result?: string; restartWithHeal: boolean }> {
-    const toolCallMatch = content.match(/<(tool_call|invoke)([^>]*)>([\s\S]*?)<\/\1>/i);
+    // Detect [TOOL_CALL] format
+    const squareBracketMatch = content.match(/\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/i);
+    const xmlMatch = content.match(/<(tool_call|invoke)([^>]*)>([\s\S]*?)<\/\1>/i);
+    
+    const toolCallMatch = squareBracketMatch || xmlMatch;
     if (!toolCallMatch) return { success: false, restartWithHeal: false };
 
     try {
-      const tagAttributes = toolCallMatch[2];
-      const tagContent = toolCallMatch[3].trim();
-      
       let toolName: string | undefined;
       let toolArgs: any = {};
-
+      const tagAttributes = xmlMatch ? xmlMatch[2] : "";
+      const tagContent = toolCallMatch[1].trim();
+      
       // Try parsing as JSON first
-      if (tagContent.startsWith("{")) {
+      if (tagContent.startsWith("{") && (tagContent.includes("=>") || tagContent.includes(":"))) {
         try {
-          const toolCall = JSON.parse(tagContent);
-          toolName = toolCall.name || toolCall.function?.name;
-          toolArgs = toolCall.parameters || toolCall.arguments || toolCall.function?.arguments || {};
+          // Handle Ruby-like {tool => "name"} format
+          const cleanedJson = tagContent.replace(/=>/g, ":");
+          // Attempt to extract name and args
+          const nameMatch = cleanedJson.match(/tool\s*:\s*["']([^"']+)["']/);
+          if (nameMatch) toolName = nameMatch[1];
+          
+          const argsMatch = cleanedJson.match(/args\s*:\s*\{([\s\S]*)\}/);
+          if (argsMatch) {
+            const argsText = argsMatch[1].trim();
+            if (argsText.includes("--")) {
+              toolArgs = this.parseFlagStyleParameters(argsText);
+            } else {
+              // Try standard JSON parse for the args part
+              try {
+                toolArgs = JSON.parse("{" + argsText + "}");
+              } catch {
+                toolArgs = {};
+              }
+            }
+          }
         } catch (e) {}
       }
 
       // If not JSON or name missing, try XML parameter parsing
-      if (!toolName) {
+      if (!toolName && xmlMatch) {
         // Extract name from attribute: name="tool_name"
         const nameMatch = tagAttributes.match(/name=["']([^"']+)["']/);
         if (nameMatch) toolName = nameMatch[1];
@@ -268,14 +315,15 @@ export class OpenUnumAgent {
         while ((match = paramRegex.exec(tagContent)) !== null) {
           toolArgs[match[1]] = match[2].trim();
         }
+      }
 
-        // Default to 'run_command' if 'command' parameter exists but name is missing
-        if (!toolName && toolArgs.command) {
-          toolName = "run_command";
-        }
+      // Default to 'run_command' if 'command' parameter exists but name is missing
+      if (!toolName && toolArgs.command) {
+        toolName = "run_command";
       }
 
       if (toolName) {
+        toolName = this.resolveToolName(toolName);
         const callSignature = `${toolName}:${JSON.stringify(toolArgs)}`;
         const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
         toolCallFrequency.set(callSignature, signatureCount);
@@ -284,7 +332,7 @@ export class OpenUnumAgent {
 
         const tool = this.tools.get(toolName);
         if (tool) {
-          this.onStatus?.(`Executing (XML): ${tool.name}`);
+          this.onStatus?.(`Executing (Tactical): ${tool.name}`);
           let result: string;
           let success = true;
 
@@ -304,19 +352,19 @@ export class OpenUnumAgent {
 
           this.history.push({
             role: "tool",
-            tool_call_id: `xml_${Date.now()}`,
+            tool_call_id: `tactical_${Date.now()}`,
             content: this.capToolResult(result),
           });
 
           if (this.memory && objectiveForMemory) {
-            this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via XML call." : "Pivot Enforced.");
+            this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via Tactical Call." : "Pivot Enforced.");
           }
 
           return { success: true, result, restartWithHeal: false };
         }
       }
     } catch (e) {
-      console.error("[Agent] Failed to parse XML tool call:", e);
+      console.error("[Agent] Failed to parse tactical tool call:", e);
     }
 
     return { success: false, restartWithHeal: false };
