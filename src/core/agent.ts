@@ -234,10 +234,66 @@ export class OpenUnumAgent {
     }
   }
 
+  private async parseAndExecuteXmlToolCalls(content: string, toolCallFrequency: Map<string, number>, toolUsageCount: Map<string, number>, sessionId: string, objectiveForMemory: string, startMissionSuccessCount: number): Promise<{ success: boolean; result?: string; restartWithHeal: boolean }> {
+    const toolCallMatch = content.match(/<(?:tool_call|invoke)>([\s\S]*?)<\/(?:tool_call|invoke)>/i);
+    if (!toolCallMatch) return { success: false, restartWithHeal: false };
+
+    try {
+      const rawJson = toolCallMatch[1].trim();
+      const toolCall = JSON.parse(rawJson);
+      const toolName = toolCall.name || toolCall.function?.name;
+      const toolArgs = toolCall.parameters || toolCall.arguments || toolCall.function?.arguments || {};
+      
+      const callSignature = `${toolName}:${JSON.stringify(toolArgs)}`;
+      const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
+      toolCallFrequency.set(callSignature, signatureCount);
+      const toolNameCount = (toolUsageCount.get(toolName) || 0) + 1;
+      toolUsageCount.set(toolName, toolNameCount);
+
+      const tool = this.tools.get(toolName);
+      if (tool) {
+        this.onStatus?.(`Executing (XML): ${tool.name}`);
+        let result: string;
+        let success = true;
+
+        try {
+          result = await tool.execute(toolArgs);
+          if (result.toLowerCase().includes("error") || result.toLowerCase().includes("timeout") || result.toLowerCase().includes("failed")) {
+            success = false;
+            this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
+          } else {
+            this.globalSuccessCount++;
+          }
+        } catch (err: any) {
+          result = `CRITICAL ERROR: ${err.message}`;
+          success = false;
+          this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
+        }
+
+        this.history.push({
+          role: "tool",
+          tool_call_id: `xml_${Date.now()}`,
+          content: this.capToolResult(result),
+        });
+
+        if (this.memory && objectiveForMemory) {
+          this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via XML call." : "Pivot Enforced.");
+        }
+
+        return { success: true, result, restartWithHeal: false };
+      }
+    } catch (e) {
+      console.error("[Agent] Failed to parse XML tool call:", e);
+    }
+
+    return { success: false, restartWithHeal: false };
+  }
+
   private cleanAssistantContent(text: string): string {
     return text
       .replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/gi, "")
       .replace(/<invoke[\s\S]*?<\/invoke>/gi, "")
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
       .trim();
   }
 
@@ -393,6 +449,7 @@ export class OpenUnumAgent {
 
       this.history.push(assistantMessage);
 
+      // 1. Handle standard tool calls
       if (assistantMessage.tool_calls) {
         let restartWithHeal = false;
         for (const toolCall of assistantMessage.tool_calls) {
@@ -494,26 +551,22 @@ export class OpenUnumAgent {
         if (restartWithHeal) {
           continue iterationLoop;
         }
-        if (iteration === totalIterationBudget - 1) {
-          const forced = await this.forceFinalAnswer("You are at the maximum iteration limit. Return the best final answer now using existing tool outputs. Do not output XML tags.");
-          if (forced) {
-            this.toolFailureCount.clear();
-            return await this.finalizeResponse(forced, sessionId);
-          }
-          if (lastToolSummary) {
-            this.toolFailureCount.clear();
-            return await this.finalizeResponse(`Iteration limit reached.\n\n${lastToolSummary}`, sessionId);
-          }
-        }
         continue;
       }
 
-      if (/<minimax:tool_call>|<invoke/i.test(content)) {
-        const forced = await this.forceFinalAnswer("Do not output tool-call XML. Return plain text final answer only.");
-        if (forced) {
-          this.toolFailureCount.clear();
-          return await this.finalizeResponse(forced, sessionId);
-        }
+      // 2. Handle XML-style tool calls in content
+      const xmlResult = await this.parseAndExecuteXmlToolCalls(
+        content,
+        toolCallFrequency,
+        toolUsageCount,
+        sessionId,
+        objectiveForMemory,
+        startMissionSuccessCount
+      );
+      if (xmlResult.success) {
+        toolExecutionCount++;
+        lastToolSummary = this.summarizeToolResult("xml_tool", this.capToolResult(xmlResult.result || ""));
+        continue;
       }
 
       // Final Proof-of-Work check against the entire mission start count (Codex Fix)
