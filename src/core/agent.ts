@@ -235,52 +235,83 @@ export class OpenUnumAgent {
   }
 
   private async parseAndExecuteXmlToolCalls(content: string, toolCallFrequency: Map<string, number>, toolUsageCount: Map<string, number>, sessionId: string, objectiveForMemory: string, startMissionSuccessCount: number): Promise<{ success: boolean; result?: string; restartWithHeal: boolean }> {
-    const toolCallMatch = content.match(/<(?:tool_call|invoke)>([\s\S]*?)<\/(?:tool_call|invoke)>/i);
+    const toolCallMatch = content.match(/<(tool_call|invoke)([^>]*)>([\s\S]*?)<\/\1>/i);
     if (!toolCallMatch) return { success: false, restartWithHeal: false };
 
     try {
-      const rawJson = toolCallMatch[1].trim();
-      const toolCall = JSON.parse(rawJson);
-      const toolName = toolCall.name || toolCall.function?.name;
-      const toolArgs = toolCall.parameters || toolCall.arguments || toolCall.function?.arguments || {};
+      const tagAttributes = toolCallMatch[2];
+      const tagContent = toolCallMatch[3].trim();
       
-      const callSignature = `${toolName}:${JSON.stringify(toolArgs)}`;
-      const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
-      toolCallFrequency.set(callSignature, signatureCount);
-      const toolNameCount = (toolUsageCount.get(toolName) || 0) + 1;
-      toolUsageCount.set(toolName, toolNameCount);
+      let toolName: string | undefined;
+      let toolArgs: any = {};
 
-      const tool = this.tools.get(toolName);
-      if (tool) {
-        this.onStatus?.(`Executing (XML): ${tool.name}`);
-        let result: string;
-        let success = true;
-
+      // Try parsing as JSON first
+      if (tagContent.startsWith("{")) {
         try {
-          result = await tool.execute(toolArgs);
-          if (result.toLowerCase().includes("error") || result.toLowerCase().includes("timeout") || result.toLowerCase().includes("failed")) {
+          const toolCall = JSON.parse(tagContent);
+          toolName = toolCall.name || toolCall.function?.name;
+          toolArgs = toolCall.parameters || toolCall.arguments || toolCall.function?.arguments || {};
+        } catch (e) {}
+      }
+
+      // If not JSON or name missing, try XML parameter parsing
+      if (!toolName) {
+        // Extract name from attribute: name="tool_name"
+        const nameMatch = tagAttributes.match(/name=["']([^"']+)["']/);
+        if (nameMatch) toolName = nameMatch[1];
+
+        // Extract parameters: <parameter name="key">value</parameter>
+        const paramRegex = /<parameter\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
+        let match;
+        while ((match = paramRegex.exec(tagContent)) !== null) {
+          toolArgs[match[1]] = match[2].trim();
+        }
+
+        // Default to 'run_command' if 'command' parameter exists but name is missing
+        if (!toolName && toolArgs.command) {
+          toolName = "run_command";
+        }
+      }
+
+      if (toolName) {
+        const callSignature = `${toolName}:${JSON.stringify(toolArgs)}`;
+        const signatureCount = (toolCallFrequency.get(callSignature) || 0) + 1;
+        toolCallFrequency.set(callSignature, signatureCount);
+        const toolNameCount = (toolUsageCount.get(toolName) || 0) + 1;
+        toolUsageCount.set(toolName, toolNameCount);
+
+        const tool = this.tools.get(toolName);
+        if (tool) {
+          this.onStatus?.(`Executing (XML): ${tool.name}`);
+          let result: string;
+          let success = true;
+
+          try {
+            result = await tool.execute(toolArgs);
+            if (result.toLowerCase().includes("error") || result.toLowerCase().includes("timeout") || result.toLowerCase().includes("failed")) {
+              success = false;
+              this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
+            } else {
+              this.globalSuccessCount++;
+            }
+          } catch (err: any) {
+            result = `CRITICAL ERROR: ${err.message}`;
             success = false;
             this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
-          } else {
-            this.globalSuccessCount++;
           }
-        } catch (err: any) {
-          result = `CRITICAL ERROR: ${err.message}`;
-          success = false;
-          this.toolFailureCount.set(tool.name, (this.toolFailureCount.get(tool.name) || 0) + 1);
+
+          this.history.push({
+            role: "tool",
+            tool_call_id: `xml_${Date.now()}`,
+            content: this.capToolResult(result),
+          });
+
+          if (this.memory && objectiveForMemory) {
+            this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via XML call." : "Pivot Enforced.");
+          }
+
+          return { success: true, result, restartWithHeal: false };
         }
-
-        this.history.push({
-          role: "tool",
-          tool_call_id: `xml_${Date.now()}`,
-          content: this.capToolResult(result),
-        });
-
-        if (this.memory && objectiveForMemory) {
-          this.memory.addTactic(objectiveForMemory, tool.name, result, success, success ? "Verified via XML call." : "Pivot Enforced.");
-        }
-
-        return { success: true, result, restartWithHeal: false };
       }
     } catch (e) {
       console.error("[Agent] Failed to parse XML tool call:", e);
