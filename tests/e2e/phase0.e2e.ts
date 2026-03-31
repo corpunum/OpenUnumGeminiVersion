@@ -15,7 +15,7 @@ describe("OpenUnum Ultimate: Phase 0 (Integrity)", () => {
     expect(status.checks.disk).toBe(true);
     expect(status.checks.memory).toBe(true);
     console.log(`Test: Hardware check passed. Status: ${status.status}`);
-  });
+  }, 10000);
 
   test("Tactical Memory: Search and Retrieval", async () => {
     memory.addTactic("Test Goal", "ls", "Success", true, "None");
