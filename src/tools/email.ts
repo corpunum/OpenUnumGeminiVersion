@@ -21,16 +21,29 @@ export class EmailTool {
   }
 
   /**
-   * Advanced: Send using Google's GAM CLI if installed.
-   * This is what was requested for Google Suite integration.
+   * Official Google Workspace CLI (gws) Integration.
+   * This uses the official 'gws' binary from https://github.com/googleworkspace/cli
    */
-  async sendViaGam(to: string, subject: string, body: string): Promise<string> {
+  async sendViaGws(to: string, subject: string, body: string): Promise<string> {
     try {
-      const command = `gam user ${process.env.GOOGLE_ADMIN_USER} send email to ${to} subject "${subject}" body "${body}"`;
+      // Pattern: gws gmail +send --to <to> --subject "<subject>" --body "<body>"
+      const command = `gws gmail +send --to "${to}" --subject "${subject.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}"`;
       await execAsync(command);
-      return `Email sent via GAM to ${to}`;
+      return `Email sent via Google Workspace CLI (gws) to ${to}`;
     } catch (e: any) {
-      return `GAM email failed: ${e.message}. (Ensure GAM is installed and configured)`;
+      return `gws email failed: ${e.message}. (Ensure gws is installed: 'go install github.com/googleworkspace/cli/cmd/gws@latest' and 'gws auth login' is completed)`;
+    }
+  }
+
+  /**
+   * Advanced: List unread messages or triage inbox via gws.
+   */
+  async triageInbox(): Promise<string> {
+    try {
+      const { stdout } = await execAsync("gws gmail +triage");
+      return stdout;
+    } catch (e: any) {
+      return `gws triage failed: ${e.message}`;
     }
   }
 }

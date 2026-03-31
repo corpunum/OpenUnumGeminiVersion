@@ -40,6 +40,7 @@ export class OpenUnumAgent {
   constructor(provider: ModelProvider, systemPrompt: string, memory?: MemoryManager) {
     this.provider = provider;
     this.memory = memory;
+    this.gitSync = new GitSync();
     this.systemPrompt = systemPrompt;
     this.tools = new Map();
     this.history.push({ role: "system", content: systemPrompt });
@@ -546,6 +547,13 @@ export class OpenUnumAgent {
       return this.finalizeResponse(forced, sessionId);
     }
     return this.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
+  }
+
+  getHistory() {
+    return this.history;
+  }
+}
+is.finalizeResponse("Mission timed out after maximum iterations. Partial success recorded.", sessionId);
   }
 
   getHistory() {
