@@ -1,7 +1,28 @@
-# OpenUnum: Gemini Version
+# OpenUnum: The Ultimate AI Assistant
 ## Autonomous Linux AI Assistant with Tactical Memory & Ghost Monitoring
 
-OpenUnum is a minimalist, high-performance AI assistant designed for deep integration with Ubuntu/Linux environments. Built using **Bun**, it prioritizes **Hardware/Software Ownership**, **Tactical Learning**, and **Autonomous Resilience**.
+OpenUnum is a high-performance, autonomous AI assistant designed for deep integration with Ubuntu/Linux environments. Built using **Bun**, it prioritizes **Hardware Ownership**, **Self-Healing**, and **Autonomous Resilience**.
+
+---
+
+## 🛡 Mandates & Philosophy
+
+### 1. Hardware Ownership (Primary Mandate)
+The agent is the **owner of the hardware**. It is explicitly authorized to:
+- Use `sudo` for system configuration and maintenance.
+- Install packages (`apt`, `npm`, `pnpm`, `pip`) as required by the mission.
+- Manage system services (`systemctl`) and process management.
+- Modify any part of the OS to fulfill the human owner's goals.
+- **Pivoting:** If high-level tools (Browser) fail, the agent MUST pivot to low-level tools (CLI: `aria2`, `curl`, `huggingface-cli`) without stopping.
+
+### 2. Self-Healing & Self-Restoration
+OpenUnum monitors its own health. If it detects a corrupted config, a hung process, or a failed dependency, it is programmed to fix itself autonomously. 
+
+### 3. Proof-of-Work
+Every task completion must be accompanied by concrete evidence—file paths, console output, or screenshots. The agent does not "say" it is done; it "proves" it.
+
+### 4. Daily Research & Evolution
+The agent autonomously researches advanced agentic methods on Reddit, X, and Google every day, presenting findings for human review before incorporating them into its core logic.
 
 ---
 

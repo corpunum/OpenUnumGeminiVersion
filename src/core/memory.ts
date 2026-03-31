@@ -8,12 +8,26 @@ export interface MemoryEntry {
   timestamp: number;
 }
 
+export interface Tactic {
+  id?: number;
+  objective: string;
+  action: string;
+  outcome: string;
+  success: boolean;
+  learning: string;
+  timestamp: number;
+}
+
 export class MemoryManager {
   private db: Database;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string = "openunum.db") {
     this.db = new Database(dbPath);
     this.init();
+  }
+
+  getDatabase(): Database {
+    return this.db;
   }
 
   private init() {
@@ -43,6 +57,16 @@ export class MemoryManager {
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    // Wisdom table for long-term pattern storage
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS wisdom (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pattern TEXT,
+        solution TEXT,
+        score INTEGER DEFAULT 1,
+        last_used DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
   }
 
   addMessage(session_id: string, role: string, content: string) {
@@ -52,24 +76,42 @@ export class MemoryManager {
     );
   }
 
-  addTactic(objective: string, action: string, outcome: string, success: boolean, learning: string) {
+  addTactic(objective: string, action: string, outcome: string, success: boolean, learning: string = "") {
     this.db.run(
       "INSERT INTO tactics (objective, action, outcome, success, learning) VALUES (?, ?, ?, ?, ?)",
       [objective, action, outcome, success ? 1 : 0, learning]
     );
   }
 
-  getTactics(objective: string): any[] {
-    return this.db.query("SELECT * FROM tactics WHERE objective LIKE ? ORDER BY timestamp DESC LIMIT 5")
-      .all(`%${objective}%`);
+  /**
+   * Smart Retrieval: Find tactics that match keywords in the objective.
+   */
+  searchTactics(query: string, limit: number = 5): Tactic[] {
+    const keywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 3);
+    if (keywords.length === 0) return this.getAllTactics().slice(0, limit);
+
+    const conditions = keywords.map(() => "objective LIKE ?").join(" OR ");
+    const params = keywords.map(k => `%${k}%`);
+
+    const rows = this.db.query(`SELECT * FROM tactics WHERE ${conditions} ORDER BY success DESC, timestamp DESC LIMIT ?`).all(...params, limit);
+    return rows.map((r: any) => ({
+      ...r,
+      success: !!r.success,
+      timestamp: new Date(r.timestamp).getTime()
+    }));
   }
 
-  getAllTactics(): any[] {
-    return this.db.query("SELECT * FROM tactics ORDER BY timestamp DESC LIMIT 20").all();
+  getAllTactics(): Tactic[] {
+    const rows = this.db.query("SELECT * FROM tactics ORDER BY timestamp DESC LIMIT 100").all();
+    return rows.map((r: any) => ({
+      ...r,
+      success: !!r.success,
+      timestamp: new Date(r.timestamp).getTime()
+    }));
   }
 
-  getMessages(session_id: string): MemoryEntry[] {
-    return this.db.query("SELECT * FROM messages WHERE session_id = ?").all(session_id) as MemoryEntry[];
+  getMessages(session_id: string, limit: number = 50): MemoryEntry[] {
+    return this.db.query("SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?").all(session_id, limit).reverse() as MemoryEntry[];
   }
 
   clearMessages(session_id: string) {
