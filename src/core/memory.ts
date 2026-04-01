@@ -148,6 +148,10 @@ export class MemoryManager {
     ).all(`%${pattern}%`, limit) as Array<{ action: string; outcome: string; success: number; learning: string }>;
   }
 
+  searchTactics(objective: string, limit: number = 3): Array<{ action: string; outcome: string; success: number; learning: string }> {
+    return this.getSimilarTactics(objective, limit);
+  }
+
   close() {
     this.db.close();
   }
