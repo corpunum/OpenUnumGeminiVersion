@@ -138,17 +138,17 @@ export class MemoryManager {
     );
   }
 
-  getSimilarTactics(objective: string, limit: number = 3): Array<{ action: string; outcome: string; success: number; learning: string }> {
+  getSimilarTactics(objective: string, limit: number = 3): Array<{ objective: string; action: string; outcome: string; success: number; learning: string }> {
     const keywords = objective.toLowerCase().split(/\s+/).filter(w => w.length > 3);
     if (keywords.length === 0) return [];
     const pattern = keywords.join("%");
     return this.db.query(
-      `SELECT action, outcome, success, learning FROM tactics 
+      `SELECT objective, action, outcome, success, learning FROM tactics 
        WHERE objective LIKE ? ORDER BY success DESC, timestamp DESC LIMIT ?`
-    ).all(`%${pattern}%`, limit) as Array<{ action: string; outcome: string; success: number; learning: string }>;
+    ).all(`%${pattern}%`, limit) as Array<{ objective: string; action: string; outcome: string; success: number; learning: string }>;
   }
 
-  searchTactics(objective: string, limit: number = 3): Array<{ action: string; outcome: string; success: number; learning: string }> {
+  searchTactics(objective: string, limit: number = 3): Array<{ objective: string; action: string; outcome: string; success: number; learning: string }> {
     return this.getSimilarTactics(objective, limit);
   }
 
