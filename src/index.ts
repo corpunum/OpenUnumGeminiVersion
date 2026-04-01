@@ -23,7 +23,7 @@ async function main() {
   console.log("=".repeat(60) + "\n");
 
   // Initialize core systems
-  const memory = new MemoryManager("openunum.db");
+  const memory = new MemoryManager(MemoryManager.defaultDbPath());
   const configManager = new ConfigManager(memory);
   const config = configManager.get();
 

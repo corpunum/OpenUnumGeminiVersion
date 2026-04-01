@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG: OpenUnumConfig = {
     whatsapp: { enabled: false },
   },
   ui: {
-    port: 3000,
+    port: Number(process.env.OPENUNUM_GEMINI_PORT || 3000),
   },
 };
 

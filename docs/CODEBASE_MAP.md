@@ -32,6 +32,6 @@ This document provides a structural map of the project for efficient navigation.
 
 ## /root (Project Root)
 - `GEMINI.md`: High-level project philosophy and mandates.
-- `openunum.db`: The persistent memory and tactical ledger.
-- `openunum.service`: Systemd user service for background execution.
+- `~/.openunum-gemini/openunum.db`: The persistent memory and tactical ledger.
+- `openunum-gemini.service`: Systemd user service for background execution.
 - `install.sh`: One-line setup and update script.

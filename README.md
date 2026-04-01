@@ -17,7 +17,7 @@ A background watchdog process continuously monitors the agent's performance. If 
 OpenUnum does not trust its own "I am done" claims. It must **prove** completion through successful tool executions. If the agent claims success without tool-based evidence, the system rejects the output and mandates a re-execution.
 
 ### 🎮 Mission Control UI
-A high-performance, real-time Web UI (`http://localhost:3000`) that provides:
+A high-performance, real-time Web UI (`http://localhost:3000`, configurable via `OPENUNUM_GEMINI_PORT`) that provides:
 - **Interactive Tool Cards**: Expandable blocks showing raw tool calls, parameters, and results.
 - **Pulsing Telemetry**: Live status updates showing the agent's internal "thinking" and "iteration" cycles.
 - **Dynamic Configuration**: Hot-swap LLM providers (Ollama, NVIDIA, OpenRouter, OpenAI) without restarting.
@@ -87,8 +87,8 @@ OpenUnumGeminiVersion/
 │   ├── tools/         # Hardware Interaction (Exec, Browser, Files)
 │   ├── ui/            # Mission Control Server
 │   ├── index.ts       # Service Entry & Init
-├── openunum.db        # The Tactical Ledger
-├── openunum.service   # Linux Service Definition
+├── ~/.openunum-gemini/openunum.db   # The Tactical Ledger
+├── openunum-gemini.service          # Linux Service Definition
 ├── install.sh         # Deployment Logic
 └── GEMINI.md          # Internal Agent Documentation
 ```

@@ -23,7 +23,7 @@ bun install
 # 4. Setup Systemd Service
 echo "Configuring OpenUnum Gemini service..."
 mkdir -p ~/.config/systemd/user/
-cat <<EOF > ~/.config/systemd/user/openunumgemini.service
+cat <<EOF > ~/.config/systemd/user/openunum-gemini.service
 [Unit]
 Description=OpenUnum Gemini Version - Dedicated Assistant
 After=network.target
@@ -33,6 +33,7 @@ Type=simple
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$HOME/.bun/bin/bun run src/index.ts
 Environment=PATH=$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=OPENUNUM_GEMINI_HOME=$HOME/.openunum-gemini
 Restart=always
 RestartSec=10
 
@@ -42,12 +43,12 @@ EOF
 
 # 5. Start Service
 systemctl --user daemon-reload
-systemctl --user enable openunumgemini.service
-systemctl --user restart openunumgemini.service
+systemctl --user enable openunum-gemini.service
+systemctl --user restart openunum-gemini.service
 
 echo ""
 echo "--- Installation Complete! ---"
 echo "OpenUnum Gemini is now running as a background service."
 echo "Access the Control Center at: http://localhost:3000"
-echo "Check status: systemctl --user status openunumgemini.service"
-echo "View logs: journalctl --user -u openunumgemini.service -f"
+echo "Check status: systemctl --user status openunum-gemini.service"
+echo "View logs: journalctl --user -u openunum-gemini.service -f"

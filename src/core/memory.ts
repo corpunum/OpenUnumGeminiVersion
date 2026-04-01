@@ -1,4 +1,7 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import os from "node:os";
 
 export interface MemoryEntry {
   id?: number;
@@ -21,7 +24,13 @@ export interface Tactic {
 export class MemoryManager {
   private db: Database;
 
-  constructor(dbPath: string = "openunum.db") {
+  static defaultDbPath(): string {
+    const home = process.env.OPENUNUM_GEMINI_HOME || join(os.homedir(), ".openunum-gemini");
+    return join(home, "openunum.db");
+  }
+
+  constructor(dbPath: string = MemoryManager.defaultDbPath()) {
+    mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.init();
   }
