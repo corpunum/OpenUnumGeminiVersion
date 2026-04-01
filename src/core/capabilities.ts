@@ -5,10 +5,10 @@ export function getCapabilities(config: { ui: { host?: string; port: number }; a
     app_name: 'OpenUnumGeminiVersion',
     menu: ['chat', 'missions', 'trace', 'runtime', 'settings'],
     quick_prompts: [
-      'Inspect the current repository and summarize the highest-risk code path.',
-      'Create a small test that proves this bug is fixed.',
-      'Plan and implement a mission to harden runtime health handling.',
-      'Review recent changes and list the most likely regressions.',
+      'Trigger a health-oriented mission and summarize recovery actions.',
+      'Inspect tactical memory and propose an improved execution strategy.',
+      'Run an autonomy stress-check and identify failure pivots.',
+      'Review the codebase for self-healing edge cases and patch one.',
     ],
     features: {
       chat: true,
@@ -20,12 +20,16 @@ export function getCapabilities(config: { ui: { host?: string; port: number }; a
       self_heal: true,
       browser_control: true,
       git_runtime: true,
+      ghost_monitor: true,
+      tactical_memory: true,
+      health_monitoring: true,
       memory_inspection: true,
       research: true,
     },
     ui: {
       shell: 'shared-autonomy-v1',
       chat_style: 'imessage',
+      skin: 'gemini-graphite',
     },
     runtime: {
       host: config.ui.host || '127.0.0.1',
