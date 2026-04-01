@@ -7,7 +7,9 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
-    "test": "bun test"
+    "test": "bun run src/tests/run.ts",
+    "e2e:webui": "bun test ./tests/e2e/phase0.e2e.ts",
+    "test:all": "bun run src/tests/run.ts && bun test ./tests/e2e/phase0.e2e.ts"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",

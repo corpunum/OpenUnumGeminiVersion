@@ -2,6 +2,7 @@
 ## Autonomous Linux AI Assistant with Tactical Memory & Ghost Monitoring
 
 OpenUnum is a high-performance, autonomous AI assistant designed for deep integration with Ubuntu/Linux environments. Built using **Bun**, it prioritizes **Hardware Ownership**, **Self-Healing**, and **Autonomous Resilience**.
+Runtime state is isolated under `~/.openunum-gemini/` by default.
 
 ---
 
@@ -106,7 +107,7 @@ OpenUnumGeminiVersion/
 │   ├── tools/         # Exec, Files, Browser
 │   ├── ui/            # Web Server & Frontend
 │   ├── index.ts       # Entry Point & Service Init
-├── openunum.db        # Tactical Ledger & Memory
+├── ~/.openunum-gemini/data/openunum.db  # Tactical Ledger & Memory
 ├── openunum.service   # Systemd User Service
 ├── install.sh         # Autonomous Installer
 └── GEMINI.md          # This Documentation

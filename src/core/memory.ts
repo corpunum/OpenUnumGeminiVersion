@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import os from "node:os";
 
@@ -24,13 +24,40 @@ export interface Tactic {
 export class MemoryManager {
   private db: Database;
 
+  static runtimeHome(): string {
+    return process.env.OPENUNUM_GEMINI_HOME || join(os.homedir(), ".openunum-gemini");
+  }
+
   static defaultDbPath(): string {
-    const home = process.env.OPENUNUM_GEMINI_HOME || join(os.homedir(), ".openunum-gemini");
-    return join(home, "openunum.db");
+    return join(MemoryManager.runtimeHome(), "data", "openunum.db");
+  }
+
+  private static migrateLegacyDb(targetPath: string): void {
+    if (existsSync(targetPath)) return;
+
+    const home = MemoryManager.runtimeHome();
+    const legacyCandidates = [
+      join(home, "openunum.db"),
+      join(process.cwd(), "openunum.db"),
+    ];
+
+    for (const legacyPath of legacyCandidates) {
+      if (!existsSync(legacyPath)) continue;
+      try {
+        copyFileSync(legacyPath, targetPath);
+        if (legacyPath !== targetPath) {
+          unlinkSync(legacyPath);
+        }
+        return;
+      } catch {
+        // Keep boot resilient even if migration cleanup fails.
+      }
+    }
   }
 
   constructor(dbPath: string = MemoryManager.defaultDbPath()) {
     mkdirSync(dirname(dbPath), { recursive: true });
+    MemoryManager.migrateLegacyDb(dbPath);
     this.db = new Database(dbPath);
     this.init();
   }

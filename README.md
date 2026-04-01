@@ -76,6 +76,12 @@ Open your browser to:
 bun run src/index.ts
 ```
 
+### 4. Validation Gates
+```bash
+bun run test
+bun run e2e:webui
+```
+
 ---
 
 ## 📂 Project Structure (Agent Brief)
@@ -87,7 +93,7 @@ OpenUnumGeminiVersion/
 │   ├── tools/         # Hardware Interaction (Exec, Browser, Files)
 │   ├── ui/            # Mission Control Server
 │   ├── index.ts       # Service Entry & Init
-├── ~/.openunum-gemini/openunum.db   # The Tactical Ledger
+├── ~/.openunum-gemini/data/openunum.db   # The Tactical Ledger
 ├── openunum-gemini.service          # Linux Service Definition
 ├── install.sh         # Deployment Logic
 └── GEMINI.md          # Internal Agent Documentation
