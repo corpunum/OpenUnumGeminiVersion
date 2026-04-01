@@ -17,7 +17,7 @@ A background watchdog process continuously monitors the agent's performance. If 
 OpenUnum does not trust its own "I am done" claims. It must **prove** completion through successful tool executions. If the agent claims success without tool-based evidence, the system rejects the output and mandates a re-execution.
 
 ### 🎮 Mission Control UI
-A high-performance, real-time Web UI (`http://localhost:3000`, configurable via `OPENUNUM_GEMINI_PORT`) that provides:
+A high-performance, real-time Web UI (`http://127.0.0.1:18884`, configurable via `OPENUNUM_GEMINI_HOST` / `OPENUNUM_GEMINI_PORT`) that provides:
 - **Interactive Tool Cards**: Expandable blocks showing raw tool calls, parameters, and results.
 - **Pulsing Telemetry**: Live status updates showing the agent's internal "thinking" and "iteration" cycles.
 - **Dynamic Configuration**: Hot-swap LLM providers (Ollama, NVIDIA, OpenRouter, OpenAI) without restarting.
@@ -65,7 +65,7 @@ Run the autonomous installer to set up the Bun runtime, dependencies, and system
 
 ### 2. Launching the UI
 Open your browser to:
-`http://localhost:3000`
+`http://127.0.0.1:18884`
 
 ### 2.1 Chat Persistence
 - Refresh-safe history is loaded automatically from local SQLite.

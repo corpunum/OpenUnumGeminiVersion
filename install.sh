@@ -34,6 +34,8 @@ WorkingDirectory=$PROJECT_DIR
 ExecStart=$HOME/.bun/bin/bun run src/index.ts
 Environment=PATH=$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=OPENUNUM_GEMINI_HOME=$HOME/.openunum-gemini
+Environment=OPENUNUM_GEMINI_HOST=127.0.0.1
+Environment=OPENUNUM_GEMINI_PORT=18884
 Restart=always
 RestartSec=10
 
@@ -49,6 +51,6 @@ systemctl --user restart openunum-gemini.service
 echo ""
 echo "--- Installation Complete! ---"
 echo "OpenUnum Gemini is now running as a background service."
-echo "Access the Control Center at: http://localhost:3000"
+echo "Access the Control Center at: http://127.0.0.1:18884"
 echo "Check status: systemctl --user status openunum-gemini.service"
 echo "View logs: journalctl --user -u openunum-gemini.service -f"

@@ -3,7 +3,7 @@
 ## Runtime Isolation
 - Home: `OPENUNUM_GEMINI_HOME` or `~/.openunum-gemini`
 - Database: `~/.openunum-gemini/data/openunum.db`
-- Service port: `OPENUNUM_GEMINI_PORT` (default `3000`)
+- Service host/port: `OPENUNUM_GEMINI_HOST`/`OPENUNUM_GEMINI_PORT` (default `127.0.0.1:18884`)
 
 ## Core Modules
 - `src/core/agent.ts`: autonomous task loop and strategy pivots.

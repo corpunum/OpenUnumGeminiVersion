@@ -8,6 +8,8 @@ WorkingDirectory=/home/corp-unum/OpenUnumGeminiVersion
 ExecStart=/home/corp-unum/.bun/bin/bun run src/index.ts
 Environment=PATH=/home/corp-unum/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=OPENUNUM_GEMINI_HOME=/home/corp-unum/.openunum-gemini
+Environment=OPENUNUM_GEMINI_HOST=127.0.0.1
+Environment=OPENUNUM_GEMINI_PORT=18884
 Restart=always
 RestartSec=10
 

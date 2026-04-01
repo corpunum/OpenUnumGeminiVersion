@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenUnum Gemini</title>
+  <style>
+    :root {
+      --bg0: #0b1115;
+      --bg1: #111a20;
+      --bg2: #16252e;
+      --line: #27414f;
+      --text: #d9e7ef;
+      --muted: #8ca6b3;
+      --accent: #44b6ff;
+      --good: #58d68d;
+      --bad: #ff7b7b;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; color: var(--text); background: radial-gradient(1200px 600px at 85% -10%, #1a3f56 0%, var(--bg0) 60%); font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    .app { display: grid; grid-template-columns: 280px 1fr 360px; grid-template-rows: 1fr 40px; height: 100vh; }
+    .left { grid-column: 1; grid-row: 1; border-right: 1px solid var(--line); background: linear-gradient(180deg, var(--bg1), #0f171d); display: flex; flex-direction: column; }
+    .main { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-width: 0; }
+    .right { grid-column: 3; grid-row: 1; border-left: 1px solid var(--line); background: linear-gradient(180deg, var(--bg1), #101920); overflow: auto; }
+    .status { grid-column: 1 / span 3; grid-row: 2; border-top: 1px solid var(--line); padding: 10px 12px; color: var(--muted); background: #0d1419; font-size: 12px; display: flex; align-items: center; gap: 14px; }
+
+    .section { padding: 12px; }
+    .section h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .btn { background: #18303d; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+    .btn:hover { border-color: var(--accent); }
+    .input, .select, textarea { width: 100%; background: #0f1b23; border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 10px 12px; }
+    .input:focus, .select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+
+    #sessions { overflow: auto; flex: 1; }
+    .session { padding: 10px 12px; border-bottom: 1px solid #1c313d; cursor: pointer; }
+    .session:hover { background: #14222b; }
+    .session.active { background: #193345; border-left: 2px solid var(--accent); }
+    .session .title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session .meta { margin-top: 4px; font-size: 11px; color: var(--muted); }
+
+    .messages { flex: 1; overflow: auto; padding: 16px 20px 100px; }
+    .bubble { max-width: 78%; margin-bottom: 10px; padding: 10px 12px; border-radius: 16px; line-height: 1.4; white-space: pre-wrap; }
+    .bubble.user { margin-left: auto; background: #1f4760; border: 1px solid #336c8f; }
+    .bubble.assistant { margin-right: auto; background: #1a2730; border: 1px solid #2c414f; }
+    .composer { position: sticky; bottom: 0; border-top: 1px solid var(--line); background: linear-gradient(180deg, #10191f 0%, #0f171d 100%); padding: 12px; }
+    .composer-grid { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
+
+    .card { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin: 10px 12px; background: #121e26; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 8px; margin-bottom: 8px; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); color: var(--muted); }
+    .pill.good { border-color: #2f7c5b; color: var(--good); }
+    .pill.bad { border-color: #7d3a3a; color: var(--bad); }
+    .trace { max-height: 220px; overflow: auto; font-family: "IBM Plex Mono", monospace; font-size: 12px; color: #c8d8e4; background: #0d151b; border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+
+    @media (max-width: 1200px) { .app { grid-template-columns: 250px 1fr; } .right { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="left">
+      <div class="section">
+        <button class="btn" data-testid="new-session" id="newSessionBtn">New Session</button>
+      </div>
+      <div class="section" style="padding-top:0;">
+        <input class="input" data-testid="session-search" id="sessionSearch" placeholder="Search sessions">
+      </div>
+      <div id="sessions"></div>
+    </aside>
+
+    <main class="main">
+      <div class="messages" data-testid="message-stream" id="messageStream"></div>
+      <div class="composer">
+        <div class="composer-grid">
+          <textarea class="input" data-testid="composer-input" id="composerInput" rows="2" placeholder="Set a task or mission"></textarea>
+          <button class="btn" data-testid="send-message" id="sendBtn">Send</button>
+        </div>
+      </div>
+    </main>
+
+    <aside class="right">
+      <div class="card">
+        <div class="row">
+          <label>Provider</label>
+          <select class="select" data-testid="provider-select" id="providerSelect"></select>
+        </div>
+        <div class="row">
+          <label>Model</label>
+          <select class="select" data-testid="model-select" id="modelSelect"></select>
+        </div>
+        <div class="row">
+          <label>Fallback</label>
+          <select class="select" data-testid="fallback-model-select" id="fallbackModelSelect"></select>
+        </div>
+        <div class="row">
+          <label>Autonomy Mode</label>
+          <select class="select" data-testid="autonomy-mode-select" id="autonomyModeSelect">
+            <option value="autonomy-first">autonomy-first</option>
+          </select>
+        </div>
+        <button class="btn" id="saveRoutingBtn">Save Routing</button>
+      </div>
+
+      <div class="card">
+        <h3>Provider Health</h3>
+        <div data-testid="provider-health" id="providerHealth"></div>
+      </div>
+
+      <div class="card">
+        <h3>Trace</h3>
+        <div class="trace" data-testid="trace-panel" id="tracePanel"></div>
+      </div>
+    </aside>
+
+    <footer class="status" data-testid="status-bar" id="statusBar">
+      <span id="statusProvider">provider: -</span>
+      <span id="statusModel">model: -</span>
+      <span id="statusSession">session: -</span>
+      <span id="statusInfo">ready</span>
+    </footer>
+  </div>
+
+  <script>
+    const providerOrder = ['ollama', 'nvidia', 'openrouter', 'openai'];
+    let modelCatalog = null;
+    let providerConfig = null;
+    let sessions = [];
+    let currentSessionId = null;
+
+    function esc(text) {
+      const d = document.createElement('div');
+      d.textContent = String(text || '');
+      return d.innerHTML;
+    }
+
+    function setStatus(msg) {
+      document.getElementById('statusInfo').textContent = msg;
+    }
+
+    function appendTrace(line) {
+      const p = document.getElementById('tracePanel');
+      const ts = new Date().toISOString().slice(11, 19);
+      p.innerHTML += `[${ts}] ${esc(line)}\n`;
+      p.scrollTop = p.scrollHeight;
+    }
+
+    async function jget(path) {
+      const res = await fetch(path, { cache: 'no-store' });
+      return res.json();
+    }
+
+    async function jpost(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      return res.json();
+    }
+
+    function renderSessions() {
+      const q = (document.getElementById('sessionSearch').value || '').toLowerCase();
+      const list = document.getElementById('sessions');
+      const filtered = sessions.filter((s) => !q || String(s.title || '').toLowerCase().includes(q));
+      list.innerHTML = filtered.map((s) => `
+        <div class="session ${s.id === currentSessionId ? 'active' : ''}" data-id="${esc(s.id)}">
+          <div class="title">${esc(s.title || s.id)}</div>
+          <div class="meta">${Number(s.messageCount || 0)} messages</div>
+        </div>
+      `).join('');
+      list.querySelectorAll('.session').forEach((el) => el.addEventListener('click', () => openSession(el.dataset.id)));
+    }
+
+    async function refreshSessions() {
+      const out = await jget('/api/sessions');
+      sessions = out.sessions || [];
+      if (!currentSessionId && sessions.length) currentSessionId = sessions[0].id;
+      renderSessions();
+      document.getElementById('statusSession').textContent = `session: ${currentSessionId || '-'}`;
+    }
+
+    async function openSession(id) {
+      currentSessionId = id;
+      renderSessions();
+      const out = await jget(`/api/sessions/${encodeURIComponent(id)}`);
+      const msgs = out.session?.messages || [];
+      const stream = document.getElementById('messageStream');
+      stream.innerHTML = msgs.map((m) => `<div class="bubble ${m.role === 'user' ? 'user' : 'assistant'}">${esc(m.content)}</div>`).join('');
+      stream.scrollTop = stream.scrollHeight;
+      document.getElementById('statusSession').textContent = `session: ${currentSessionId}`;
+    }
+
+    function renderProviderSelectors() {
+      const psel = document.getElementById('providerSelect');
+      psel.innerHTML = providerOrder.map((p) => `<option value="${p}">${p}</option>`).join('');
+      psel.value = providerConfig.provider || 'ollama';
+
+      const activeProvider = psel.value;
+      const row = (modelCatalog.providers || []).find((x) => x.provider === activeProvider);
+      const msel = document.getElementById('modelSelect');
+      const models = row?.models || [];
+      msel.innerHTML = models.map((m) => `<option value="${esc(m.model_id)}">${esc(m.model_id)}</option>`).join('');
+      const configuredModel = String(providerConfig.model || '').replace(/^.*?\//, '');
+      if ([...msel.options].some((o) => o.value === configuredModel)) msel.value = configuredModel;
+
+      const fsel = document.getElementById('fallbackModelSelect');
+      const all = [];
+      (modelCatalog.providers || []).forEach((provider) => {
+        (provider.models || []).forEach((m) => all.push(`${provider.provider}/${m.model_id}`));
+      });
+      fsel.innerHTML = all.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+      if ([...fsel.options].some((o) => o.value === providerConfig.fallbackModel)) fsel.value = providerConfig.fallbackModel;
+
+      document.getElementById('autonomyModeSelect').value = providerConfig.autonomyMode || 'autonomy-first';
+    }
+
+    function renderProviderHealth() {
+      const root = document.getElementById('providerHealth');
+      root.innerHTML = (modelCatalog.providers || []).map((p) => {
+        const top = p.models?.[0]?.model_id || '-';
+        const cls = p.status === 'healthy' ? 'good' : 'bad';
+        return `<div style="margin-bottom:8px;"><strong>${esc(p.display_name)}</strong> <span class="pill ${cls}">${esc(p.status)}</span><div style="color:var(--muted);font-size:12px;">top: ${esc(top)} | models: ${Number(p.models?.length || 0)}</div></div>`;
+      }).join('');
+    }
+
+    async function refreshConfigAndCatalog() {
+      const cfg = await jget('/api/config');
+      providerConfig = cfg.providerConfig;
+      modelCatalog = cfg.modelCatalog;
+      renderProviderSelectors();
+      renderProviderHealth();
+      document.getElementById('statusProvider').textContent = `provider: ${providerConfig.provider}`;
+      document.getElementById('statusModel').textContent = `model: ${providerConfig.model}`;
+    }
+
+    async function newSession() {
+      const out = await jpost('/api/sessions', {});
+      currentSessionId = out.session.id;
+      await refreshSessions();
+      await openSession(currentSessionId);
+      setStatus('new session created');
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('composerInput');
+      const text = String(input.value || '').trim();
+      if (!text || !currentSessionId) return;
+
+      const stream = document.getElementById('messageStream');
+      stream.innerHTML += `<div class="bubble user">${esc(text)}</div>`;
+      input.value = '';
+      stream.scrollTop = stream.scrollHeight;
+      setStatus('running');
+      appendTrace(`chat.started provider=${providerConfig.provider} model=${providerConfig.model}`);
+
+      const out = await jpost('/api/chat', { sessionId: currentSessionId, message: text });
+      const reply = out.reply || out.response || '(no response)';
+      stream.innerHTML += `<div class="bubble assistant">${esc(reply)}</div>`;
+      stream.scrollTop = stream.scrollHeight;
+      await refreshSessions();
+      setStatus('ready');
+      appendTrace(`chat.completed chars=${String(reply).length}`);
+    }
+
+    async function saveRouting() {
+      const provider = document.getElementById('providerSelect').value;
+      const model = document.getElementById('modelSelect').value;
+      const fallbackModel = document.getElementById('fallbackModelSelect').value;
+      const fallbackProvider = String(fallbackModel).split('/')[0] || 'nvidia';
+      const autonomyMode = document.getElementById('autonomyModeSelect').value;
+      await jpost('/api/config', {
+        providerConfig: {
+          provider,
+          model,
+          fallbackProvider,
+          fallbackModel,
+          autonomyMode,
+        },
+      });
+      await refreshConfigAndCatalog();
+      setStatus('routing saved');
+      appendTrace(`health.updated provider=${provider} model=${provider}/${model}`);
+    }
+
+    function connectWS() {
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${protocol}://${location.host}/ws`);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'event' && msg.event) {
+            appendTrace(`${msg.event.type}`);
+          }
+        } catch {}
+      };
+      ws.onclose = () => setTimeout(connectWS, 1000);
+    }
+
+    document.getElementById('newSessionBtn').addEventListener('click', newSession);
+    document.getElementById('sessionSearch').addEventListener('input', renderSessions);
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('composerInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    document.getElementById('providerSelect').addEventListener('change', () => {
+      providerConfig.provider = document.getElementById('providerSelect').value;
+      renderProviderSelectors();
+    });
+    document.getElementById('saveRoutingBtn').addEventListener('click', saveRouting);
+
+    (async function bootstrap() {
+      connectWS();
+      await refreshConfigAndCatalog();
+      await refreshSessions();
+      if (!currentSessionId) await newSession();
+      else await openSession(currentSessionId);
+      appendTrace('ui.ready');
+    })().catch((e) => {
+      setStatus(`boot error: ${e.message}`);
+    });
+  </script>
+</body>
+</html>

@@ -1,539 +1,289 @@
-import { serve } from "bun";
+import { readFileSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ConfigManager } from "../core/config.ts";
-import { fetchOllamaModels } from "../core/ollama.ts";
 import { OpenUnumAgent } from "../core/agent.ts";
-import { ModelProvider } from "../core/providers.ts";
+import { buildModelCatalog, buildLegacyProviderModels, normalizeProviderId, PROVIDER_ORDER } from "../core/model-catalog.ts";
+import { getCapabilities } from "../core/capabilities.ts";
 
-type ModelLookupConfig = {
-  provider: string;
-  baseUrl: string;
-  apiKey?: string;
-  modelId: string;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = join(__dirname, "public");
+
+type Mission = {
+  id: string;
+  goal: string;
+  status: "queued" | "running" | "completed" | "failed" | "stopped";
+  sessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  result?: string;
+  error?: string;
 };
 
-async function fetchAvailableModels(configManager: ConfigManager, override?: Partial<ModelLookupConfig>) {
-  const modelConfig = {
-    ...configManager.get().model,
-    ...override,
-  };
-
-  const provider = new ModelProvider({
-    provider: modelConfig.provider,
-    baseUrl: modelConfig.baseUrl,
-    apiKey: modelConfig.apiKey,
-    model: modelConfig.modelId,
+function json(payload: any, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+    },
   });
+}
 
-  const remoteModels = await provider.listModels();
+function normalizeModelForProvider(provider: string, model: string) {
+  const p = normalizeProviderId(provider);
+  const raw = String(model || "").trim();
+  if (!raw) return "";
+  if (/^(ollama|nvidia|openrouter|openai|generic)\//.test(raw)) return raw.replace(/^generic\//, "openai/");
+  return `${p}/${raw}`;
+}
 
-  if (modelConfig.provider !== "ollama") {
-    return Array.from(new Set(remoteModels));
+function emitEvent(clients: Set<ServerWebSocket<unknown>>, event: any) {
+  const msg = JSON.stringify({ type: "event", event });
+  for (const ws of clients) {
+    try { ws.send(msg); } catch {}
   }
-
-  const ollamaModels = await fetchOllamaModels(modelConfig.baseUrl);
-  return Array.from(new Set([...ollamaModels, ...remoteModels]));
 }
 
 export function startUiServer(configManager: ConfigManager, agent: OpenUnumAgent) {
-  const port = configManager.get().ui.port;
+  const missions = new Map<string, Mission>();
+  const wsClients = new Set<ServerWebSocket<unknown>>();
+  const ui = configManager.get().ui;
+  const host = ui.host || "127.0.0.1";
+  const port = ui.port;
 
-  serve({
+  const server = Bun.serve({
+    hostname: host,
     port,
     async fetch(req, server) {
       const url = new URL(req.url);
 
       if (url.pathname === "/ws") {
-        if (server.upgrade(req)) {
-          return;
-        }
+        if (server.upgrade(req)) return;
         return new Response("Upgrade failed", { status: 400 });
       }
 
-      if (url.pathname === "/api/config" && req.method === "GET") {
-        return Response.json(configManager.get());
+      if (url.pathname === "/api/health" && req.method === "GET") {
+        const cfg = configManager.get();
+        return json({
+          status: "ok",
+          app: "OpenUnumGeminiVersion",
+          host: cfg.ui.host || "127.0.0.1",
+          port: cfg.ui.port,
+          provider: cfg.model.provider,
+          model: cfg.model.modelId,
+          healthy: true,
+          provider_order: [...PROVIDER_ORDER],
+          runtime: {
+            autonomy_mode: "autonomy-first",
+          },
+          timestamp: new Date().toISOString(),
+        });
       }
 
-      if (url.pathname === "/api/config" && req.method === "POST") {
-        const body = await req.json();
-        configManager.set(body);
-        const activeConfig = configManager.get();
-        agent.updateModelConfig(activeConfig.model);
-        return Response.json({ success: true, config: activeConfig });
+      if (url.pathname === "/api/capabilities" && req.method === "GET") {
+        return json(getCapabilities(configManager.get()));
       }
 
-      if (url.pathname === "/api/ollama/models" && req.method === "GET") {
-        const models = await fetchOllamaModels(configManager.get().model.baseUrl);
-        return Response.json(models);
+      if (url.pathname === "/api/model-catalog" && req.method === "GET") {
+        const catalog = await buildModelCatalog(configManager.get());
+        return json(catalog);
       }
 
       if (url.pathname === "/api/models" && req.method === "GET") {
-        const models = await fetchAvailableModels(configManager, {
-          provider: url.searchParams.get("provider") ?? undefined,
-          baseUrl: url.searchParams.get("baseUrl") ?? undefined,
-          apiKey: url.searchParams.get("apiKey") ?? undefined,
+        const cfg = configManager.get();
+        const provider = normalizeProviderId(url.searchParams.get("provider") || cfg.model.provider);
+        const models = await buildLegacyProviderModels(cfg, provider);
+        return json({ provider, models });
+      }
+
+      if (url.pathname === "/api/config" && req.method === "GET") {
+        const cfg = configManager.get();
+        const catalog = await buildModelCatalog(cfg);
+        return json({
+          app_id: "openunum-gemini",
+          providerConfig: {
+            provider: cfg.model.provider,
+            model: cfg.model.modelId,
+            fallbackProvider: cfg.model.fallbackProvider,
+            fallbackModel: cfg.model.fallbackModelId,
+            providerModels: cfg.model.providerModels,
+            fallbackOrder: cfg.model.fallbackOrder,
+            autonomyMode: "autonomy-first",
+          },
+          modelCatalog: catalog,
+          capabilities: getCapabilities(cfg),
         });
-        return Response.json({ models });
       }
 
-      if (url.pathname === "/api/chat/history" && req.method === "GET") {
-        const sessionId = url.searchParams.get("sessionId") || "ui";
-        return Response.json({ messages: agent.getHistoryForSession(sessionId) });
+      if ((url.pathname === "/api/config") && (req.method === "POST" || req.method === "PUT")) {
+        const body = await req.json() as any;
+        const cfg = configManager.get();
+        const provider = normalizeProviderId(body?.providerConfig?.provider || cfg.model.provider);
+        const model = normalizeModelForProvider(provider, body?.providerConfig?.model || cfg.model.modelId);
+        const fallbackModelRaw = String(body?.providerConfig?.fallbackModel || cfg.model.fallbackModelId || "").trim();
+        const fallbackProvider = normalizeProviderId(body?.providerConfig?.fallbackProvider || fallbackModelRaw.split("/")[0] || cfg.model.fallbackProvider || "nvidia");
+        const fallbackModel = normalizeModelForProvider(fallbackProvider, fallbackModelRaw || cfg.model.providerModels?.[fallbackProvider]);
+
+        const providerModels = {
+          ...(cfg.model.providerModels || {}),
+          ...(body?.providerConfig?.providerModels || {}),
+          [provider]: model,
+          [fallbackProvider]: fallbackModel,
+        };
+
+        const nextModel = {
+          ...cfg.model,
+          provider,
+          modelId: model,
+          fallbackProvider,
+          fallbackModelId: fallbackModel,
+          providerModels,
+          fallbackOrder: [...PROVIDER_ORDER],
+        };
+
+        configManager.set({ model: nextModel, ui: { ...cfg.ui, host, port } as any });
+        const active = configManager.get();
+        agent.updateModelConfig(active.model as any);
+        emitEvent(wsClients, { type: "health.updated", ts: new Date().toISOString(), payload: { provider, model } });
+
+        return json({ ok: true, providerConfig: {
+          provider: active.model.provider,
+          model: active.model.modelId,
+          fallbackProvider: active.model.fallbackProvider,
+          fallbackModel: active.model.fallbackModelId,
+          providerModels: active.model.providerModels,
+          fallbackOrder: active.model.fallbackOrder,
+          autonomyMode: "autonomy-first",
+        } });
       }
 
-      if (url.pathname === "/api/chat/sessions" && req.method === "GET") {
-        if (!agent.memory) return Response.json({ sessions: [] });
-        return Response.json({ sessions: agent.memory.getSessions() });
+      if (url.pathname === "/api/events" && req.method === "GET") {
+        return json({ events: [] });
       }
 
-      if (url.pathname === "/api/chat/new" && req.method === "POST") {
-        const newSessionId = `session_${Date.now()}`;
-        if (agent.memory) {
-          agent.memory.createSession(newSessionId, "New Chat");
+      if (url.pathname === "/api/missions" && req.method === "GET") {
+        return json({ missions: [...missions.values()] });
+      }
+
+      if (url.pathname === "/api/missions/start" && req.method === "POST") {
+        const body = await req.json() as any;
+        const id = `mission_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const mission: Mission = {
+          id,
+          goal: String(body?.goal || "").trim(),
+          status: "running",
+          sessionId: `mission:${id}`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        missions.set(id, mission);
+        emitEvent(wsClients, { type: "mission.updated", ts: new Date().toISOString(), payload: { mission } });
+
+        try {
+          const result = await agent.step(`Mission goal: ${mission.goal}`, mission.sessionId);
+          mission.status = "completed";
+          mission.result = result;
+        } catch (error: any) {
+          mission.status = "failed";
+          mission.error = String(error?.message || error);
         }
-        return Response.json({ success: true, sessionId: newSessionId });
+        mission.updatedAt = new Date().toISOString();
+        emitEvent(wsClients, { type: "mission.updated", ts: new Date().toISOString(), payload: { mission } });
+        return json({ ok: true, mission });
+      }
+
+      if (url.pathname === "/api/missions/status" && req.method === "GET") {
+        const id = String(url.searchParams.get("id") || "").trim();
+        const mission = missions.get(id);
+        if (!mission) return json({ ok: false, error: "mission_not_found" }, 404);
+        return json({ ok: true, mission });
+      }
+
+      if (url.pathname === "/api/missions/stop" && req.method === "POST") {
+        const body = await req.json() as any;
+        const id = String(body?.id || "").trim();
+        const mission = missions.get(id);
+        if (!mission) return json({ ok: false, error: "mission_not_found" }, 404);
+        mission.status = "stopped";
+        mission.updatedAt = new Date().toISOString();
+        emitEvent(wsClients, { type: "mission.updated", ts: new Date().toISOString(), payload: { mission } });
+        return json({ ok: true, mission });
+      }
+
+      if (url.pathname === "/api/sessions" && req.method === "GET") {
+        const sessions = agent.memory ? agent.memory.getSessions() : [];
+        return json({ sessions: sessions.map((s: any) => ({ id: s.session_id, title: s.title, messageCount: Number(s.message_count || 0), updatedAt: s.updated_at })) });
+      }
+
+      if (url.pathname === "/api/sessions" && req.method === "POST") {
+        const id = `session_${Date.now()}`;
+        if (agent.memory) agent.memory.createSession(id, "New Chat");
+        return json({ session: { id, title: "New Chat", messageCount: 0 } });
+      }
+
+      if (url.pathname.match(/^\/api\/sessions\/[^/]+$/) && req.method === "GET") {
+        const id = url.pathname.split("/").pop()!;
+        const messages = agent.memory ? agent.memory.getMessages(id) : [];
+        return json({ session: { id, messages: messages.map((m: any) => ({ role: m.role, content: m.content, timestamp: m.timestamp })) } });
+      }
+
+      if (url.pathname.match(/^\/api\/sessions\/[^/]+$/) && req.method === "DELETE") {
+        return json({ deleted: true });
+      }
+
+      if (url.pathname === "/api/chat" && req.method === "POST") {
+        const body = await req.json() as any;
+        const sessionId = String(body?.sessionId || "ui");
+        const text = String(body?.message || body?.text || "").trim();
+        if (!text) return json({ ok: false, error: "message_required" }, 400);
+        emitEvent(wsClients, { type: "chat.started", ts: new Date().toISOString(), payload: { sessionId } });
+        try {
+          const reply = await agent.step(text, sessionId);
+          emitEvent(wsClients, { type: "chat.completed", ts: new Date().toISOString(), payload: { sessionId } });
+          return json({ sessionId, response: reply, reply, answer: reply });
+        } catch (error: any) {
+          const reply = `Provider execution failed: ${String(error?.message || error)}`;
+          emitEvent(wsClients, { type: "chat.error", ts: new Date().toISOString(), payload: { sessionId, error: reply } });
+          return json({ sessionId, response: reply, reply, answer: reply, completed: false });
+        }
       }
 
       if (url.pathname === "/") {
-        return new Response(getHtml(), { headers: { "Content-Type": "text/html" } });
+        const htmlPath = join(PUBLIC_DIR, "index.html");
+        const html = existsSync(htmlPath) ? readFileSync(htmlPath, "utf-8") : "<html><body>UI missing</body></html>";
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
       }
 
       return new Response("Not Found", { status: 404 });
     },
+
     websocket: {
-      async open(ws) {
-        agent.onStatus = (status) => {
-          ws.send(JSON.stringify({ type: "status", text: status }));
-        };
+      open(ws) {
+        wsClients.add(ws);
+        ws.send(JSON.stringify({ type: "hello", app: "OpenUnumGeminiVersion", ts: new Date().toISOString() }));
+      },
+      close(ws) {
+        wsClients.delete(ws);
       },
       async message(ws, message) {
-        const data = JSON.parse(message.toString());
-        if (data.type === "chat") {
-          const sessionId = data.sessionId || "ui";
-          ws.send(JSON.stringify({ type: "status", text: "Analyzing environment and planning task..." }));
-          try {
-            const response = await agent.step(data.text, sessionId);
-            ws.send(JSON.stringify({ type: "response", text: response }));
-          } catch (err: any) {
-            ws.send(JSON.stringify({ type: "error", text: err.message }));
+        try {
+          const data = JSON.parse(message.toString());
+          if (data.type === "chat") {
+            const sessionId = String(data.sessionId || "ui");
+            const text = String(data.message || data.text || "").trim();
+            const reply = await agent.step(text, sessionId);
+            ws.send(JSON.stringify({ type: "response", sessionId, response: reply, answer: reply }));
           }
+        } catch (err: any) {
+          ws.send(JSON.stringify({ type: "error", text: String(err?.message || err) }));
         }
       },
     },
   });
-  console.log(`UI Server running at http://localhost:${port}`);
-}
 
-function getHtml() {
-  return `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenUnum Control UI</title>
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Inter:wght@300;400;600&display=swap');
-
-      :root { --bg: #0a0a0a; --card: #141414; --primary: #00E676; --secondary: #2979FF; --text: #f0f0f0; --border: #222; --accent: #FFD600; }
-
-      body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; overflow: hidden; }
-
-      .sidebar { width: 300px; background: var(--card); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 10; }
-      .sidebar-header { padding: 25px; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--primary); font-size: 1.1em; letter-spacing: 1px; }
-      .nav { padding: 15px; }
-      .nav-item { padding: 12px 16px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); font-size: 0.9em; border: 1px solid transparent; color: #aaa; }
-      .nav-item:hover { background: #1e1e1e; border-color: #333; color: white; }
-      .nav-item.active { background: rgba(0, 230, 118, 0.1); color: var(--primary); border-color: var(--primary); font-weight: 600; }
-
-      .main { flex: 1; display: flex; flex-direction: column; background: var(--bg); position: relative; }
-      .content-area { flex: 1; overflow-y: auto; padding: 30px; display: none; }
-      .content-area.active { display: block; animation: fadeIn 0.3s ease-out; }
-
-      @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-      #chat-area { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; width: 100%; }
-      #messages { flex: 1; overflow-y: auto; padding-bottom: 30px; scroll-behavior: smooth; }
-
-      .msg { margin-bottom: 20px; max-width: 85%; padding: 14px 18px; border-radius: 12px; line-height: 1.6; font-size: 0.95em; position: relative; }
-      .msg.user { align-self: flex-end; background: var(--secondary); color: white; border-bottom-right-radius: 4px; box-shadow: 0 4px 15px rgba(41, 121, 255, 0.2); }
-      .msg.ai { align-self: flex-start; background: var(--card); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-
-      .msg.status { align-self: center; background: rgba(0, 230, 118, 0.05); color: var(--primary); font-style: italic; font-size: 0.85em; border: 1px dashed rgba(0, 230, 118, 0.3); padding: 8px 16px; border-radius: 20px; animation: pulse 2s infinite ease-in-out; margin: 15px 0; max-width: 90%; }
-
-      @keyframes pulse { 0% { opacity: 0.6; transform: scale(0.98); } 50% { opacity: 1; transform: scale(1); } 100% { opacity: 0.6; transform: scale(0.98); } }
-
-      .tool-call { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: #080808; overflow: hidden; }
-      .tool-header { padding: 8px 12px; background: #1a1a1a; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 0.8em; color: var(--accent); }
-      .tool-header:hover { background: #252525; }
-      .tool-content { padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: #050505; border-top: 1px solid var(--border); display: none; color: #aaa; white-space: pre-wrap; word-break: break-all; }
-      .tool-call.expanded .tool-content { display: block; }
-      .tool-call.expanded .tool-header { background: #222; border-bottom: 1px solid var(--border); }
-      .tool-header::after { content: '▸'; transition: transform 0.2s; }
-      .tool-call.expanded .tool-header::after { transform: rotate(90deg); }
-
-      .composer { padding: 25px 0; border-top: 1px solid var(--border); display: flex; gap: 12px; background: var(--bg); }
-      input[type="text"], input[type="password"] { flex: 1; background: var(--card); border: 1px solid var(--border); color: white; padding: 14px 20px; border-radius: 10px; outline: none; transition: border-color 0.2s; font-size: 0.95em; }
-      input[type="text"]:focus, input[type="password"]:focus { border-color: var(--primary); }
-      button.send-btn { background: var(--primary); color: black; border: none; padding: 0 25px; border-radius: 10px; font-weight: 700; cursor: pointer; transition: transform 0.1s; display: flex; align-items: center; justify-content: center; }
-      button.send-btn:active { transform: scale(0.95); }
-
-      .settings-card { background: var(--card); padding: 25px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
-      h2 { margin-top: 0; font-size: 1.1em; color: var(--primary); font-weight: 600; }
-      label { display: block; margin: 18px 0 8px; font-size: 0.85em; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-      select, .settings-input { width: 100%; padding: 12px; background: #0a0a0a; border: 1px solid #333; color: white; border-radius: 8px; box-sizing: border-box; }
-
-      @media (max-width: 768px) {
-        body { flex-direction: column; }
-        .sidebar { width: 100%; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
-        .sidebar-header { padding: 15px 20px; }
-        .nav { display: flex; overflow-x: auto; padding: 10px; }
-        .nav-item { margin-bottom: 0; margin-right: 8px; white-space: nowrap; padding: 8px 15px; font-size: 0.85em; }
-        .content-area { padding: 20px; }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="sidebar">
-      <div class="sidebar-header">OPENUNUM<span style="font-weight:300; opacity:0.6; margin-left:5px;">GEMINI</span></div>
-      <div class="nav">
-        <div class="nav-item active" onclick="showPage('chat', this)">Control Center</div>
-        <div class="nav-item" onclick="showPage('settings', this)">Configuration</div>
-        <div class="nav-item" onclick="showPage('browser', this)">Live Telemetry</div>
-      </div>
-      <div style="padding: 15px 25px 5px; font-size: 0.75em; color: #555; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700;">Chat Sessions</div>
-      <div id="session-list" style="flex: 1; overflow-y: auto; padding: 10px 15px;">
-        <!-- Sessions loaded here -->
-      </div>
-      <div style="padding: 15px; border-top: 1px solid var(--border);">
-        <button onclick="createNewChat()" style="width: 100%; background: #1a1a1a; border: 1px solid #333; color: white; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 0.9em; transition: all 0.2s;">+ New Chat</button>
-      </div>
-    </div>
-
-    <div class="main">
-      <div id="chat" class="content-area active">
-        <div id="chat-area">
-          <div id="messages"></div>
-          <div class="composer">
-            <input type="text" id="userInput" placeholder="Deploy a task or system command..." autocomplete="off">
-            <button class="send-btn" onclick="sendMessage()">DEPLOY</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="settings" class="content-area">
-        <h1>Configuration</h1>
-        <div class="settings-card">
-          <h2>Neural Core</h2>
-          <label>Provider</label>
-          <select id="provider">
-            <option value="ollama">Ollama (Cloud or Local)</option>
-            <option value="nvidia">NVIDIA</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="openai">OpenAI</option>
-          </select>
-          <label>Base URL</label>
-          <input type="text" id="baseUrl" class="settings-input">
-          <label>API Key</label>
-          <input type="password" id="apiKey" class="settings-input" placeholder="Optional for local Ollama">
-          <label>Neural Model ID</label>
-          <select id="modelId" class="settings-input"></select>
-          <label>Fallback Model ID</label>
-          <select id="fallbackModelId" class="settings-input">
-            <option value="">(Auto)</option>
-          </select>
-          <button onclick="saveConfig()" style="margin-top: 25px; background: var(--primary); color:black; border:none; padding:12px 24px; border-radius:8px; font-weight:700; cursor:pointer;">APPLY CHANGES</button>
-        </div>
-      </div>
-
-      <div id="browser" class="content-area">
-        <h1>Live Telemetry</h1>
-        <div class="settings-card" style="text-align: center; border-style: dashed;">
-          <p style="color: #666; font-size: 0.9em;">Browser Port 9222 Active. Awaiting navigation signals.</p>
-          <div id="browser-view" style="width: 100%; height: 450px; background: #000; border-radius: 8px; display: flex; align-items: center; justify-content: center; border: 1px solid #222;">
-            <div class="msg status" style="animation: pulse 1s infinite;">AWAITING SIGNAL</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <script>
-      let ws;
-      let currentSessionId = 'ui';
-
-      function connectWS() {
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(protocol + '//' + location.host + '/ws');
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.type === 'response') {
-            addMessage(data.text, 'ai');
-            loadSessions(); // Refresh titles after response
-          } else if (data.type === 'status') {
-            addStatus(data.text);
-          } else if (data.type === 'error') {
-            addMessage('SYSTEM ERROR: ' + data.text, 'ai');
-          }
-        };
-        ws.onclose = () => setTimeout(connectWS, 1000);
-      }
-
-      function showPage(pageId, navEl) {
-        document.querySelectorAll('.content-area').forEach((p) => p.classList.remove('active'));
-        document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
-        document.getElementById(pageId).classList.add('active');
-        if (navEl) navEl.classList.add('active');
-        if (pageId === 'settings') loadConfig();
-      }
-
-      function addMessage(text, role) {
-        const div = document.createElement('div');
-        div.className = 'msg ' + role;
-        div.innerText = text;
-        document.getElementById('messages').appendChild(div);
-        div.scrollIntoView({ behavior: 'smooth' });
-      }
-
-      function resetChatMessages() {
-        const messages = document.getElementById('messages');
-        messages.innerHTML = '';
-      }
-
-      async function loadChatHistory(sessionId = 'ui') {
-        currentSessionId = sessionId;
-        try {
-          const res = await fetch(\`/api/chat/history?sessionId=\${sessionId}\`);
-          const data = await res.json();
-          const messages = Array.isArray(data.messages) ? data.messages : [];
-
-          resetChatMessages();
-          if (!messages.length) {
-            addMessage('SYSTEM INITIALIZED: Hardware ownership verified. Tactical memory active. How shall I serve you, Master?', 'ai');
-          } else {
-            for (const msg of messages) {
-              addMessage(msg.content, msg.role === 'assistant' ? 'ai' : 'user');
-            }
-          }
-          loadSessions();
-        } catch {
-          resetChatMessages();
-          addMessage('SYSTEM INITIALIZED: Hardware ownership verified. Tactical memory active. How shall I serve you, Master?', 'ai');
-        }
-      }
-
-      async function loadSessions() {
-        try {
-          const res = await fetch('/api/chat/sessions');
-          const data = await res.json();
-          const list = document.getElementById('session-list');
-          list.innerHTML = '';
-          
-          data.sessions.forEach(s => {
-            const div = document.createElement('div');
-            div.className = 'nav-item' + (s.session_id === currentSessionId ? ' active' : '');
-            div.style.fontSize = '0.85em';
-            div.style.padding = '10px 12px';
-            div.style.whiteSpace = 'nowrap';
-            div.style.overflow = 'hidden';
-            div.style.textOverflow = 'ellipsis';
-            div.innerText = s.title || 'New Chat';
-            div.onclick = () => {
-              loadChatHistory(s.session_id);
-              showPage('chat');
-            };
-            list.appendChild(div);
-          });
-        } catch (e) {
-          console.error("Failed to load sessions", e);
-        }
-      }
-
-      async function createNewChat() {
-        const res = await fetch('/api/chat/new', { method: 'POST' });
-        const data = await res.json();
-        currentSessionId = data.sessionId;
-        resetChatMessages();
-        addMessage('Started a new chat session. Tactical memory is fresh.', 'ai');
-        loadSessions();
-        showPage('chat');
-      }
-
-      function addStatus(text) {
-        const messages = document.getElementById('messages');
-
-        if (text.startsWith('Executing:')) {
-          const toolName = text.slice('Executing:'.length).trim() || 'unknown_tool';
-
-          const toolDiv = document.createElement('div');
-          toolDiv.className = 'tool-call';
-          toolDiv.innerHTML =
-            '<div class="tool-header" onclick="this.parentElement.classList.toggle(\\'expanded\\')">' +
-            '<span>DEPLOYED TOOL: ' + toolName + '</span>' +
-            '</div>' +
-            '<div class="tool-content">Tool execution started.</div>';
-          messages.appendChild(toolDiv);
-        } else {
-          const div = document.createElement('div');
-          div.className = 'msg status';
-          div.innerText = text;
-          messages.appendChild(div);
-        }
-        messages.scrollTop = messages.scrollHeight;
-      }
-
-      function sendMessage() {
-        const input = document.getElementById('userInput');
-        const text = input.value.trim();
-        if (!text) return;
-
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          addMessage('SYSTEM ERROR: WebSocket not connected yet.', 'ai');
-          return;
-        }
-
-        addMessage(text, 'user');
-        ws.send(JSON.stringify({ type: 'chat', text: text, sessionId: currentSessionId }));
-        input.value = '';
-      }
-
-      function providerDefaults(provider) {
-        if (provider === 'ollama') {
-          return { baseUrl: 'http://127.0.0.1:11434/v1' };
-        }
-        if (provider === 'nvidia') {
-          return { baseUrl: 'https://integrate.api.nvidia.com/v1' };
-        }
-        if (provider === 'openrouter') {
-          return { baseUrl: 'https://openrouter.ai/api/v1' };
-        }
-        return { baseUrl: 'https://api.openai.com/v1' };
-      }
-
-      async function loadModels(selectedModelId) {
-        const modelSelect = document.getElementById('modelId');
-        const fallbackSelect = document.getElementById('fallbackModelId');
-        const previousSelection = selectedModelId || modelSelect.value;
-        const previousFallback = fallbackSelect.value;
-        const provider = document.getElementById('provider').value;
-        const baseUrl = document.getElementById('baseUrl').value;
-        const apiKey = document.getElementById('apiKey').value;
-
-        modelSelect.innerHTML = '<option value="">Loading models...</option>';
-        fallbackSelect.innerHTML = '<option value="">Loading models...</option>';
-
-        try {
-          const params = new URLSearchParams({ provider, baseUrl });
-          if (apiKey) params.set('apiKey', apiKey);
-          const res = await fetch('/api/models?' + params.toString());
-          const data = await res.json();
-          const models = Array.isArray(data.models) ? data.models : [];
-
-          if (!models.length) {
-            modelSelect.innerHTML = '<option value="">No models found</option>';
-            fallbackSelect.innerHTML = '<option value="">(Auto)</option>';
-            if (previousSelection) {
-              const option = document.createElement('option');
-              option.value = previousSelection;
-              option.textContent = previousSelection + ' (current)';
-              modelSelect.appendChild(option);
-              modelSelect.value = previousSelection;
-            }
-            if (previousFallback) {
-              const fallbackOption = document.createElement('option');
-              fallbackOption.value = previousFallback;
-              fallbackOption.textContent = previousFallback + ' (current)';
-              fallbackSelect.appendChild(fallbackOption);
-              fallbackSelect.value = previousFallback;
-            }
-            return;
-          }
-
-          modelSelect.innerHTML = '';
-          fallbackSelect.innerHTML = '<option value="">(Auto)</option>';
-          for (const model of models) {
-            const option = document.createElement('option');
-            option.value = model;
-            option.textContent = model;
-            modelSelect.appendChild(option);
-
-            const fallbackOption = document.createElement('option');
-            fallbackOption.value = model;
-            fallbackOption.textContent = model;
-            fallbackSelect.appendChild(fallbackOption);
-          }
-
-          if (previousSelection && models.includes(previousSelection)) {
-            modelSelect.value = previousSelection;
-          } else {
-            modelSelect.value = models[0];
-          }
-
-          if (previousFallback && models.includes(previousFallback)) {
-            fallbackSelect.value = previousFallback;
-          } else {
-            fallbackSelect.value = '';
-          }
-        } catch {
-          modelSelect.innerHTML = '<option value="">Error loading models</option>';
-          fallbackSelect.innerHTML = '<option value="">(Auto)</option>';
-        }
-      }
-
-      async function loadConfig() {
-        const res = await fetch('/api/config');
-        const config = await res.json();
-
-        document.getElementById('provider').value = config.model.provider;
-        document.getElementById('baseUrl').value = config.model.baseUrl;
-        document.getElementById('apiKey').value = config.model.apiKey || '';
-
-        await loadModels(config.model.modelId);
-        document.getElementById('fallbackModelId').value = config.model.fallbackModelId || '';
-      }
-
-      async function saveConfig() {
-        const config = {
-          model: {
-            provider: document.getElementById('provider').value,
-            baseUrl: document.getElementById('baseUrl').value,
-            apiKey: document.getElementById('apiKey').value || undefined,
-            modelId: document.getElementById('modelId').value,
-            fallbackModelId: document.getElementById('fallbackModelId').value || "",
-          },
-        };
-
-        await fetch('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config),
-        });
-
-        alert('NEURAL CONFIGURATION UPDATED');
-      }
-
-      document.getElementById('userInput').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendMessage();
-      });
-
-      document.getElementById('provider').addEventListener('change', async (e) => {
-        const provider = e.target.value;
-        const defaults = providerDefaults(provider);
-        document.getElementById('baseUrl').value = defaults.baseUrl;
-        await loadModels();
-      });
-
-      document.getElementById('baseUrl').addEventListener('change', async () => {
-        await loadModels();
-      });
-
-      document.getElementById('apiKey').addEventListener('change', async () => {
-        await loadModels();
-      });
-
-      connectWS();
-      loadChatHistory();
-      loadSessions();
-    </script>
-  </body>
-  </html>
-  `;
+  console.log(`UI Server running at http://${host}:${port}`);
+  return server;
 }

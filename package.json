@@ -9,7 +9,10 @@
     "dev": "bun run --watch src/index.ts",
     "test": "bun run src/tests/run.ts",
     "e2e:webui": "bun test ./tests/e2e/phase0.e2e.ts",
-    "test:all": "bun run src/tests/run.ts && bun test ./tests/e2e/phase0.e2e.ts"
+    "e2e:model-catalog": "bun test ./tests/e2e/phase1.model-catalog.e2e.ts",
+    "e2e:webui-contract": "bun test ./tests/e2e/phase2.webui-contract.e2e.ts",
+    "e2e": "bun test ./tests/e2e/phase0.e2e.ts ./tests/e2e/phase1.model-catalog.e2e.ts ./tests/e2e/phase2.webui-contract.e2e.ts",
+    "test:all": "bun run src/tests/run.ts && bun run e2e"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",

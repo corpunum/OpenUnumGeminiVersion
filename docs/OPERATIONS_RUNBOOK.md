@@ -2,7 +2,7 @@
 
 ## Runtime Identity
 - Service: `openunum-gemini.service`
-- Web UI: `http://localhost:3000` (override `OPENUNUM_GEMINI_PORT`)
+- Web UI: `http://127.0.0.1:18884` (override `OPENUNUM_GEMINI_HOST` / `OPENUNUM_GEMINI_PORT`)
 - App home: `~/.openunum-gemini` (override `OPENUNUM_GEMINI_HOME`)
 - DB: `~/.openunum-gemini/openunum.db`
 
@@ -14,8 +14,8 @@ bun run src/index.ts
 
 ## Tests
 ```bash
-bun test
-bun run tests/e2e/phase0.e2e.ts
+bun run test
+bun run e2e
 ```
 
 ## Service Install
